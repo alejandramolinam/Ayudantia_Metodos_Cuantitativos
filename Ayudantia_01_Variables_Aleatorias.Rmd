@@ -1,0 +1,901 @@
+---
+title: "Ayudantía 1 — Variables aleatorias, distribuciones y esperanza condicional en R"
+subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+author: "Alejandra Molina"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+editor_options:
+  markdown: 
+    wrap: 72
+---
+
+```{=html}
+<!-- ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+     Fuente: Ayudantia_01_Variables_Aleatorias_SOLUCIONARIO.Rmd
+     Para modificarlo, edite el solucionario y vuelva a ejecutar
+     generar_version_estudiantes.R -->
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2
+)
+options(scipen = 999, digits = 4)
+set.seed(2026)   # reproducibilidad: TODA simulación debe llevar semilla
+```
+
+> **Cátedras de referencia:** `Clase1-Variables Aleatorias.pdf` y
+> `Clase2-Estimación.pdf`
+>
+> **Base de datos:** `data_DEMRE_todos.csv` (postulantes al sistema de
+> admisión universitaria, Chile, 2012–2018)
+>
+> **Objetivo:** dejar la base de datos en condiciones de ser analizada,
+> y luego implementar en R: momentos estadísticos, función de
+> probabilidad, densidad, CDF, momentos, distribuciones conjuntas,
+> marginales y condicionales.
+
+------------------------------------------------------------------------
+
+# Preparación de los datos
+
+Antes de calcular cualquier cosa hay que hacer un trabajo que ningún
+apunte de econometría describe, pero del que depende todo lo demás:
+**leer, entender y limpiar la base**. En esta primera sección lo
+aprenderemos a hacer paso a paso. No es un trámite: las tres cuartas
+partes del tiempo de una investigación con datos se van aquí, y los
+errores que se cometen en esta etapa no los detecta después ningún test
+de especificación.
+
+## Crea tu proyecto de R
+
+**Paso 1: Crear el proyecto.**
+
+En RStudio:
+
+> `File` → `New Project…` → `New Directory` → `New Project`
+
+Elige un nombre (por ejemplo `Metodos_Cuantitativos`) y una ubicación.
+RStudio creará la carpeta con un archivo `.Rproj` adentro y abrirá el
+proyecto automáticamente.
+
+**Paso 2: Poner los archivos adentro.** Copia a esa carpeta los dos
+archivos que están en el github del curso:
+
+`data_DEMRE_todos.csv` y este mismo `.Rmd`. Debería quedarte así:
+
+```         
+Metodos_Cuantitativos/
+├── Metodos_Cuantitativos.Rproj             <- lo creó RStudio
+├── data_DEMRE_seg.csv                      <- base de datos del curso
+└── Ayudantia_01_Variables_Aleatorias.Rmd   <- este archivo
+```
+
+**Paso 3: Abrir el proyecto correctamente.** De aquí en adelante, abre
+**siempre** el `.Rproj` (doble clic), nunca el `.Rmd` suelto. Ésa es
+toda la gracia del proyecto: fija el directorio de trabajo en tu
+carpeta, de modo que basta escribir `"data_DEMRE_seg.csv"` sin ninguna
+ruta.
+
+Verifiquemos que quedó bien. Ejecuta el bloque siguiente con el botón ▶
+(o `Ctrl+Shift+Enter`):
+
+```{r verificar-proyecto}
+getwd()                                        # en que carpeta estoy
+list.files(pattern = "\\.(csv|Rmd|Rproj)$")    # qué archivos están aquí
+```
+
+Si `list.files()` no muestra el `.csv` y el `.Rmd`, algo falta: o los
+archivos no están en la carpeta del proyecto, o abriste el `.Rmd` sin
+abrir el proyecto.
+
+**Paso 4: Instalar los paquetes.** Sólo la primera vez: descomenta la
+línea `install.packages()` y ejecútala. Después vuelve a comentarla,
+para que no reinstale en cada ejecución.
+
+```{r paquetes}
+# Limpiar el entorno
+rm(list = ls())
+
+# Cargar paquetes
+# install.packages(c("dplyr", "ggplot2", "knitr"))  # sólo la 1a vez
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+**Paso 5: Probar el `Knit`.** Presiona el botón **Knit** en la barra
+superior del editor. Si el documento se compila y se abre en una
+ventana, tu instalación está completa. Si falla, resuélvelo ahora: vas a
+necesitar `Knit` para entregar todos los trabajos del curso.
+
+## Lectura de la base
+
+El DEMRE (Departamento de Evaluación, Medición y Registro Educacional)
+administra el proceso de admisión a las universidades del Consejo de
+Rectores. La base contiene, para cada postulante y año, su puntaje
+ponderado de postulación, sus puntajes por prueba y un conjunto de
+variables socioeconómicas declaradas.
+
+```{r leer-datos}
+ruta <- "data_DEMRE_seg.csv"
+
+demre_raw <- read.csv(ruta, stringsAsFactors = FALSE)
+
+```
+
+**Primer paso al cargar una tabla de datos:** mirar su estructura.
+
+Aproximadamente 267.000 observaciones y 26 variables.
+
+```{r estructura}
+str(demre_raw, give.attr = FALSE)
+```
+
+## Qué hay adentro: crear un diccionario de variables si no existe
+
+| Variable | Contenido | Posibles valores |
+|-----------------------|--------------------------|------------------------|
+| `year` | Año del proceso de admisión | 2012–2018 |
+| `mrun` | Identificador anonimizado de la persona | Números |
+| `carrera`, `Career_ID` | Código de la carrera matrículada | 2.003 carreras distintas |
+| `puntaje` | Puntaje ponderado de postulación | 150 a 850 (puede ser más en caso de bonificaciones) |
+| `sexo` | Sexo del postulante | 1 = hombre, 2 = mujer |
+| `uedu` | Preferencia / n° de postulación en la que efectuó la matrícula | 0–11 (ojo: cambia según el año) |
+| `gped` | Grupo de dependencia del establecimiento | 0 = s/i; 1–2 = municipal; 3 = part. subvencionado; 4 = part. pagado; 5 = adm. delegada |
+| `TipoColegio` | Dependencia agregada | 1 = municipal, 2 = part. subvencionado, 3 = part. pagado |
+| `region`, `comuna` | Ubicación del establecimiento | Códigos oficiales; 0 = sin información |
+| `edumama`, `edupapa` | Nivel educacional de la madre / padre | Categórico 0–13 |
+| `edumama2`, `edupapa2` | Años de escolaridad de la madre / padre | 0 al 18 |
+| `ingreso` | Tramo de ingreso del hogar | Categoría ordinal |
+| `pj1`–`pj6` | Puntajes por prueba | NEM, Ranking, Lenguaje, Matemática, Historia, Ciencias; 0 = no rindió |
+| `Knowledge_Area_ID`, `OECD_Area_ID`, `OECD_Subarea_ID`, `Generic_Career_ID` | Clasificaciones del área de la carrera | Categóricas |
+
+**Sobre la estructura de la base.** Cada fila es un postulante en un
+año. Dentro de un año no hay `mrun` repetidos, de modo que un año
+cualquiera es un **corte transversal.** El archivo completo es un
+***pooled cross-section*** (varios cortes transversales apilados). Como
+`mrun` es estable entre años, quienes rindieron la prueba más de una vez
+forman además un **panel**. Para no mezclar años, que pueden no ser
+comparables entre ellos, en esta ayudantía trabajaremos con un corte
+transversal.
+
+## Primer diagnóstico
+
+Ésta es la lección más importante de esta sesión. Calculemos,
+ingenuamente, el promedio de la variable que nos interesa, en este caso
+el puntaje ponderado:
+
+```{r diagnostico-1}
+summary(demre_raw$puntaje)
+```
+
+### El problema de escala del año 2017
+
+Un puntaje promedio de 1**9.812** y un máximo de **94.790**, en una
+escala que en principio va de 150 a 850... algo está mal. Descompongamos
+por año:
+
+```{r diagnostico-2}
+demre_raw |>
+  group_by(year) |>
+  summarise(min = min(puntaje), 
+            mediana = median(puntaje),
+            media = mean(puntaje), 
+            max = max(puntaje)) |>
+  kable(digits = 1, caption = "Distribución de `puntaje` por año")
+```
+
+El año **2017** está en una escala 100 veces mayor. No es un error de
+digitación aleatorio: es un cambio sistemático de formato del archivo
+crudo. Se corrige dividiendo por 100.
+
+```{r diagnostico-3}
+# Verificación: ¿la escala de 2017/100 coincide con la de los demás años?
+demre_raw |>
+  mutate(puntaje_corr = ifelse(year == 2017, puntaje / 100, puntaje)) |>
+  group_by(year) |>
+  summarise(media = mean(puntaje_corr)) |>
+  kable(digits = 2, caption = "Puntaje promedio tras corregir la escala de 2017")
+```
+
+Corregido, 2017 es consistente con los valores en la serie. **Si
+hubiésemos estimado un modelo sin mirar, el resultado habría estado
+dominado por 84.000 observaciones mal escaladas.**
+
+### Códigos de valor perdido disfrazados de números
+
+El segundo problema clásico: valores faltantes codificados como `0` u
+otro valor (`99/999/9999`) en variables donde esos números podrían ser
+valores legítimos.
+
+Calculemos el porcentaje de puntajes igual a 0 para cada columna:
+
+```{r missing-1}
+sapply(demre_raw[, paste0("pj", 1:6)], function(x) 100*round(mean(x == 0), 4))
+```
+
+Un 46% de "ceros" en `pj5` no significa que la mitad del país sacó cero
+en Historia: significa **no rindió esa prueba** (Historia y Ciencias son
+electivas). Si dejáramos esos ceros, el promedio de `pj5` sería 314 en
+vez de 582:
+
+```{r missing-2}
+c(con_ceros = mean(demre_raw$pj5),
+  sin_ceros = mean(demre_raw$pj5[demre_raw$pj5 > 0]))
+```
+
+Lo mismo ocurre con `region == 0`, `comuna == 0`, `gped == 0` e
+`ingreso == 0`. Un cero mal interpretado no genera un error en R: genera
+un resultado equivocado que se ve razonable.
+
+También hay que revisar que las clasificaciones en las variables
+categóricas sean consistentes entre años si se va a trabajar con la base
+de datos completa.
+
+## La función de limpieza
+
+Consolidamos todo el diagnóstico en una función para que podamos
+reproducir el trabajo en el futuro. En el caso que después detectemos
+otro problema agregamos la corrección en esta función.
+
+```{r limpieza}
+limpiar_demre <- function(d) {
+
+  # (1) Escala del año 2017
+  d$puntaje <- ifelse(d$year == 2017, d$puntaje / 100, d$puntaje)
+
+  # (2) Ceros que en realidad son "no rindió" / "sin información"
+  # Reemplazamos los valores 0 por NA
+  for (v in paste0("pj", 1:6)) d[[v]][d[[v]] == 0] <- NA
+  d$region[d$region == 0]   <- NA
+  d$comuna[d$comuna == 0]   <- NA
+  d$gped[d$gped == 0]       <- NA
+  d$ingreso[d$ingreso == 0] <- NA
+
+  # (3) Años de escolaridad de los padres: 0 es ambiguo (¿sin estudios o s/i?)
+  # Como no sabemos vamos a crear nuevas columnas, para no perder el dato crudo
+  d$edumama_anios <- ifelse(d$edumama2 == 0, NA, d$edumama2)
+  d$edupapa_anios <- ifelse(d$edupapa2 == 0, NA, d$edupapa2)
+
+  # (4) Etiquetas comprensibles (factores: variables categóricas). 
+  # Conservamos las columnas originales
+  d$sexo_f <- factor(d$sexo, levels = 1:2, labels = c("Hombre", "Mujer"))
+  d$TipoColegio_f <- factor(d$TipoColegio, levels = 1:3,
+                          labels = c("Municipal", "Part. subvencionado",
+                                     "Part. pagado"))
+  return(d)
+}
+
+demre <- limpiar_demre(demre_raw)
+
+```
+
+Guardamos la base datos limpia para ser usada en el futuro.
+
+```{r guardar}
+# guardar la base limpia para no repetir el trabajo cada vez
+saveRDS(demre, "demre_limpio.rds")
+# En una sesión posterior leemos los datos con:  
+#demre <- readRDS("demre_limpio.rds")
+```
+
+Ahora elige un año para trabajar durante las ayudantías y guárdalo en un
+archivo separado.
+
+```{r guardar 1 yr}
+
+# Corte transversal de trabajo para el resto de la ayudantía
+d18 <- demre |> filter(year == 2018)
+nrow(d18)
+
+saveRDS(d18, "demre2018.rds")
+
+```
+
+------------------------------------------------------------------------
+
+# Momentos poblacionales y muestrales
+
+Se definen los momentos **poblacionales** media y varianza como:
+
+$$\mu = E(X), \qquad \sigma^2 = E\big[(X-\mu)^2\big]$$
+
+Pero las funciones `var()` y `sd()` de R devuelven los estimadores
+**muestrales insesgados**, que dividen por $n-1$ y no por $n$. La
+diferencia es irrelevante con $n = 100.000$, pero conceptualmente es la
+distinción entre los momentos poblacionales y muestrales.
+
+Definamos ambas versiones:
+
+```{r momentos-poblacionales}
+# Momentos POBLACIONALES (dividen por n)
+var_p <- function(x) mean((x - mean(x))^2)  # Varianza
+sd_p  <- function(x) sqrt(var_p(x))         # Desviación estándar   
+cov_p <- function(x, y) mean((x - mean(x)) * (y - mean(y)))  # Co-varianza
+
+
+```
+
+Probemos la diferencia de la varianza con una muestra pequeña y la
+población completa.
+
+```{r prueba-momentos-poblacionales}
+
+a <- sample(d18$puntaje,30)
+c(var_muestral_R = var(a), var_poblacional = var_p(a),
+  razon = var_p(a) / var(a), factor_teorico = (length(a) - 1) / length(a))
+
+
+x <- d18$puntaje
+c(var_muestral_R = var(x), var_poblacional = var_p(x),
+  razon = var_p(x) / var(x), factor_teorico = (length(x) - 1) / length(x)) 
+# Es el factor realmente 1?
+((length(x) - 1) / length(x))==1
+
+```
+
+## Momentos centrados: varianza, asimetría y kurtosis
+
+Se definen los momentos centrados **sin estandarizar**:
+
+$$\text{Var}(X) = E\big[(X-\mu)^2\big], \qquad \text{mu3} = E\big[(X-\mu)^3\big], \qquad \text{mu4} 
+= E\big[(X-\mu)^4\big]$$
+
+```{r momentos-2}
+momento_centrado <- function(x, k) mean((x - mean(x))^k)
+
+c(m2_varianza  = momento_centrado(d18$puntaje, 2),
+  mu3 = momento_centrado(d18$puntaje, 3),
+  mu4  = momento_centrado(d18$puntaje, 4))
+```
+
+Los momentos 3 y 4 no son interpretables directamente porque dependen de
+las unidades. Por eso en la práctica se reportan las versiones
+**estandarizadas**, que son adimensionales:
+
+$$\gamma_1 = \frac{E[(X-\mu)^3]}{\sigma^3}, \qquad \beta_2 = \frac{E[(X-\mu)^4]}{\sigma^4}$$
+
+```{r momentos-3}
+asimetria <- function(x) momento_centrado(x, 3) / sd_p(x)^3
+kurtosis  <- function(x) momento_centrado(x, 4) / sd_p(x)^4
+
+c(gamma1_asimetria = asimetria(d18$puntaje),
+  beta2_kurtosis  = kurtosis(d18$puntaje),
+  gamma2_exceso_kurtosis  = kurtosis(d18$puntaje) - 3)
+```
+
+Para la **asimetría** $\gamma_1$, una regla práctica común es:
+
+- $|\gamma_1| < 0.5$: asimetría pequeña.
+- $0.5 \leq |\gamma_1| < 1$: asimetría moderada.
+- $|\gamma_1| \geq 1$: asimetría fuerte.
+
+El signo indica la dirección: **positivo** = cola a la derecha;
+**negativo** = cola a la izquierda.
+
+Para el **exceso de kurtosis** $\beta_2$:
+
+- cercano a $0$: similar a una normal en términos de colas.
+- positivo: colas más pesadas que la normal.
+- negativo: colas más livianas que la normal.
+
+Aquí no hay umbrales universales tan claros como para la asimetría.
+
+## Estimador insesgado
+
+Un estimador es **insesgado** si el valor esperado de su distribución
+muestral es igual al parámetro poblacional que busca estimar.
+
+```{r estimador-insesgado}
+
+# Media de toda la población
+media_poblacional <- mean(d18$puntaje, na.rm = TRUE)
+
+# Vector donde guardaremos las 1000 medias
+medias <- numeric(2000)
+
+# Repetimos el muestreo 1000 veces
+for (i in 1:2000) {
+  
+  muestra <- sample(
+    d18$puntaje,
+    size = 100,
+    replace = FALSE
+  )
+  
+  medias[i] <- mean(muestra)
+}
+
+c(media_poblacional=media_poblacional, esperanza_promedios_muestras=mean(medias))
+
+```
+
+```{r plot-estimador-insesgado}
+datos_medias <- data.frame(media = medias)
+
+ggplot(datos_medias, aes(x = media)) +
+  geom_histogram(bins = 30) +
+  geom_vline(
+    xintercept = media_poblacional,
+    colour = "red",
+    linewidth = 1
+  ) +
+  geom_vline(
+    xintercept = mean(medias),
+    colour = "blue",
+    linewidth = 1,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Distribución de 2000 medias muestrales",
+    subtitle = "Muestras aleatorias de n = 100",
+    x = "Media muestral",
+    y = "Frecuencia"
+  ) +
+  theme_minimal()
+```
+
+------------------------------------------------------------------------
+
+# Variables aleatorias: discretas y continuas
+
+En R generalmente se usan distintos tipos de objeto según el tipo de
+variable.
+
+Las variables categóricas nominales suelen almacenarse como `factor`.
+Las categóricas ordinales pueden almacenarse como factores ordenados.
+Las variables cuantitativas, tanto discretas como continuas, se
+almacenan normalmente como `numeric`. En algunos análisis las escalas
+ordinales, como una escala Likert, también se codifican numéricamente,
+aunque esto supone tratar las distancias entre categorías como
+comparables.
+
+| Tipo | Definición | Ejemplos en DEMRE | Tipo de objeto |
+|------------------|-------------------|------------------|------------------|
+| **Discreta** | Conjunto de realizaciones finito o numerable | `sexo`, `TipoColegio`, `ingreso` (tramo), `region` | Nominal: `factor` Ordinal: `factor` ordenado o `numeric` |
+| **Continua** | Conjunto de realizaciones infinitamente divisible | `puntaje` , en la práctica `edumama_anios` | `numeric` |
+
+```{r tipos}
+# Discreta correctamente declarada
+print("Variable: tipo de colegio")
+class(d18$TipoColegio_f); levels(d18$TipoColegio_f)
+
+# Continua
+print("Variable: puntaje")
+class(d18$puntaje); range(d18$puntaje)
+```
+
+Hay muchas variables que en la realidad son discretas pero que se
+modelan como continuas, por ejemplo, la edad de una persona. Se requiere
+evaluar caso a caso.
+
+------------------------------------------------------------------------
+
+# Distribuciones de probabilidad
+
+## Caso discreto: la función de probabilidad $f(x) = \Pr(X = x)$
+
+Con datos, la función de probabilidad se **estima** por las frecuencias
+relativas:
+
+La función `table` hace una tabla de frecuencia para cada categoría.
+
+La función `prop.table` calcula la proporción por cada categoría. Esta
+es la función de probabilidad empírica.
+
+```{r pmf-tabla}
+f_ingreso <- prop.table(table(d18$ingreso)) |> as.data.frame()
+
+kable(f_ingreso,
+      col.names = c("Tramo de ingreso (x)", "f(x) = Pr(X = x)"),
+      digits = 4,
+      caption = "Función de probabilidad empírica del tramo de ingreso")
+
+```
+
+```{r pmf-plot, fig.height=3.6}
+f_ingreso |> setNames(c("tramo", "prob")) |> 
+  ggplot(aes(x = tramo, y = prob)) + 
+  geom_col(fill = "steelblue", width = 0.7) + 
+  labs(title = "Función de probabilidad de ingreso", 
+       subtitle = "Postulantes DEMRE 2018 · f(x) = Pr(X = x)", 
+       x = "Tramo de ingreso del hogar (ordinal)", 
+       y = "f(x)") + 
+  theme_minimal(base_size = 11)
+```
+
+Verifiquemos los dos axiomas de probabilidad:
+
+```{r pmf-2}
+c(todas_entre_0_y_1 = all(f_ingreso$Freq >= 0 & f_ingreso$Freq <= 1),
+  suman_uno         = sum(f_ingreso$Freq))
+```
+
+$0 \le \Pr(X=x) \le 1$ y $\sum_x f(x_i) = 1$. ✅
+
+## Caso continuo: la función de densidad $f(x)$
+
+La funcion `density` estima la función de densidad de probabilidad de
+una variable.
+
+```{r densidad, fig.height=4}
+ggplot(d18, aes(x = puntaje)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 100,
+                 fill = "grey85", colour = "white") +
+  geom_density(colour = "firebrick", linewidth = 0.9) +
+  labs(title = "Función de densidad del puntaje ponderado",
+       subtitle = "Histograma en escala de densidad + estimador kernel · DEMRE 2018",
+       x = "Puntaje ponderado", y = "f(x)") +
+  theme_minimal(base_size = 11)
+```
+
+Las dos condiciones $f(x) \ge 0$ y $\int f(x)dx = 1$ se verifican
+numéricamente sobre la densidad estimada:
+
+```{r densidad-integra}
+dens <- density(d18$puntaje)
+c(no_negativa    = all(dens$y >= 0),
+  integra_a_uno  = sum(dens$y) * mean(diff(dens$x)))   #Aproximación de la integral
+```
+
+La probabilidad empírica de un **intervalo**,
+$\Pr(a \le X \le b) = \int_a^b f(x)dx$, o la probabilidad empírica de un
+valor puntual se pueden calcular cómo la proporción de los datos en ese
+rango o con ese valor:
+
+```{r prob-intervalo}
+a <- 600; b <- 700
+c(prob_intervalo = mean(d18$puntaje >= a & d18$puntaje <= b),
+  prob_puntual  = mean(d18$puntaje == 650))   # un valor puntual: casi cero
+```
+
+------------------------------------------------------------------------
+
+# La función de distribución acumulada $F(x)$
+
+$$F(x) = \Pr(X \le x)$$
+
+La función de distribución acumulada empírica en R se construye con
+`ecdf()` (*empirical cumulative distribution function*), el resultado es
+una función que se puede evaluar para distintos valores de `x`. En el
+siguiente ejemplo, aproximadamente el 86% de los puntajes son iguales o
+inferiores a 700 puntos.
+
+```{r ecdf-1}
+F_puntaje <- ecdf(d18$puntaje)
+
+data.frame(
+  x      = c(400, 500, 600, 700, 800),
+  F_de_x = F_puntaje(c(400, 500, 600, 700, 800))
+) |> kable(digits = 4, caption = "F(x) = Pr(puntaje ≤ x), DEMRE 2018")
+```
+
+```{r ecdf-plot, fig.height=3.8}
+ggplot(d18, aes(x = puntaje)) +
+  stat_ecdf(geom = "step", colour = "steelblue", linewidth = 0.8) +
+  geom_hline(yintercept = c(0, 1), linetype = "dashed", colour = "grey60") +
+  labs(title = "Función de distribución acumulada del puntaje",
+       subtitle = "F(x) = Pr(X ≤ x) · DEMRE 2018",
+       x = "Puntaje ponderado", y = "F(x)") +
+  theme_minimal(base_size = 11)
+```
+
+## Las cuatro propiedades de $F(x)$
+
+El apunte exige: $0 \le F(x) \le 1$; monotonía creciente;
+$F(+\infty)=1$; $F(-\infty)=0$. Verifiquémoslas:
+
+```{r ecdf-props}
+grid <- seq(300, 1000, by = 5)
+Fg   <- F_puntaje(grid)
+
+c(entre_0_y_1  = all(Fg >= 0 & Fg <= 1),
+  no_decrece   = all(diff(Fg) >= 0),
+  F_mas_inf    = F_puntaje(1e6),
+  F_menos_inf  = F_puntaje(-1e6))
+```
+
+------------------------------------------------------------------------
+
+# Trabajar con las distribuciones en R
+
+## La familia `d` / `p` / `q` / `r`
+
+R usa una convención sistemática para cualquier distribución. Para la
+normal:
+
+| Prefijo    | Función                      | Objeto matemático        |
+|------------|------------------------------|--------------------------|
+| `dnorm(x)` | **d**ensidad                 | $f(x)$                   |
+| `pnorm(q)` | **p**robabilidad acumulada   | $F(q) = \Pr(X \le q)$    |
+| `qnorm(p)` | **q**uantil (inversa de $F$) | $F^{-1}(p)$              |
+| `rnorm(n)` | **r**andom (simulación)      | $n$ realizaciones de $X$ |
+
+Lo mismo aplica a `pois`, `unif`, `chisq`, `t` y `f`.
+
+Es importante conocer la distribución de los datos porque muchas
+herramientas estadísticas se basan en ciertos supuestos sobre su
+comportamiento. Uno de los supuestos más comunes es la **normalidad**,
+aunque dependiendo del método puede referirse a la variable, a los
+errores o a los residuos del modelo.
+
+Cuando una variable presenta una distribución muy distinta de la normal,
+existen transformaciones que pueden modificar su forma y, en algunos
+casos, hacerla más similar a una distribución normal.
+
+Veamos qué tan “normal” es la distribución de los puntajes:
+
+```{r normalidad-plot, fig.height=4}
+ggplot(d18, aes(x = puntaje)) +
+  geom_density(aes(colour = "Densidad empírica"), linewidth = 0.9) +
+  stat_function(fun = dnorm,
+                args = list(mean = mean(d18$puntaje), sd = sd_p(d18$puntaje)),
+                aes(colour = "Normal ajustada"), linewidth = 0.9, linetype = "dashed") +
+  scale_colour_manual(values = c("Densidad empírica" = "firebrick",
+                                 "Normal ajustada"   = "steelblue"), name = NULL) +
+  labs(title = "¿Es normal el puntaje ponderado?",
+       subtitle = "Densidad observada vs. normal con la misma media y desviación estándar",
+       x = "Puntaje ponderado", y = "f(x)") +
+  theme_minimal(base_size = 11) + theme(legend.position = "bottom")
+
+```
+
+## Estandarización de una distribución: $z = (x - \mu)/\sigma$
+
+La nueva variable aleatoria $z$ tiene una distribución con media cero y
+varianza unitaria.
+
+```{r estandarizacion}
+z <- (d18$puntaje - mean(d18$puntaje)) / sd_p(d18$puntaje)
+c(media_z = mean(z), var_z = var_p(z))
+```
+
+Estandarizar **no** vuelve normal a una variable: sólo cambia su escala.
+La forma de la distribución no se altera.
+
+------------------------------------------------------------------------
+
+# Distribuciones conjuntas y marginales
+
+## La distribución conjunta
+
+$$\Pr(X = x, Y = y) = f(x,y)$$
+
+Tomemos $X$ = tipo de colegio e $Y$ = sexo:
+
+```{r conjunta}
+conjunta <- prop.table(table(TipoColegio_f = d18$TipoColegio_f, Sexo = d18$sexo_f))
+kable(round(conjunta, 4),
+      caption = "Distribución conjunta f(x, y), DEMRE 2018")
+
+sum(conjunta)   # debe ser 1
+```
+
+## Las distribuciones marginales
+
+En el caso en que se tienen distribuciones conjuntas, la distribución
+marginal es la distribución de una variable para cualquier valor de la
+otra variable. En la práctica, es la distribución de una variable, sin
+condicionar por otra variable.
+
+$$f_X(x) = \sum_y f(x,y)$$
+
+En R, `margin.table()` o `addmargins()`:
+
+```{r marginales}
+f_x <- margin.table(conjunta, 1)   # marginal de Tipo Colegio (sumando sobre Sexo)
+f_y <- margin.table(conjunta, 2)   # marginal de Sexo (sumando sobre Tipo Colegio)
+
+addmargins(round(conjunta, 4)) |>
+  kable(caption = "Conjunta con marginales en los bordes")
+
+
+d_x <- prop.table(table(d18$TipoColegio_f))
+d_y <- prop.table(table(d18$sexo_f))
+comparacion_x <- data.frame(
+  TipoColegio = names(f_x),
+  Marginal = as.numeric(f_x),
+  Directa = as.numeric(d_x)
+)
+
+comparacion_x |>
+  kable(
+    digits = 4,
+    caption = "Distribución marginal vs. distribución directa de Tipo de Colegio"
+  )
+
+```
+
+## ¿Son independientes dos variables?
+
+> "Dos variables aleatorias son independientes si y sólo si
+> $f(x,y) = f_X(x)\,f_Y(y)$."
+
+La prueba es directa: comparar la conjunta observada con el producto de
+las marginales.
+
+```{r independencia}
+producto_marginales <- outer(as.vector(f_x), as.vector(f_y))
+dimnames(producto_marginales) <- dimnames(conjunta)
+
+kable(round(conjunta - producto_marginales, 5),
+      caption = "f(x,y) − f_X(x)·f_Y(y): si fueran independientes, todo sería 0")
+```
+
+Las diferencias no son cero, pero son pequeñas. ¿Son *estadísticamente*
+distintas de cero? El test $\chi^2$ de independencia nos sirve para
+evaluar
+
+$$ H_0:\ \text{Tipo de colegio y sexo son independientes}$$
+
+frente a:
+
+$$ H_1:\ \text{Tipo de colegio y sexo están asociados}$$
+
+```{r chisq-test}
+test <- chisq.test(table(d18$TipoColegio_f, d18$sexo_f))
+test
+```
+
+Con 101.758 observaciones, rechazamos la independencia. **Pero atención
+a la interpretación:** con $n$ muy grande, casi *cualquier* desviación
+resulta significativa. Para medir la intensidad de la asociación entre
+dos variables categóricas se usa la ***V de Cramer***. Los valores van
+de 0 a 1, donde 0 significa que no hay asociación y 1 que la asociación
+es perfecta.
+
+$$ V = \sqrt{\frac{\chi^2}{n \cdot \min(r-1,\;c-1)}} $$
+
+```{r cramer}
+V_cramer <- sqrt(as.numeric(test$statistic) /
+                   (sum(test$observed) * (min(dim(test$observed)) - 1)))
+c(V_de_Cramer = V_cramer)
+```
+
+Un $V$ de Cramér de `0.0328` es una asociación muy débil.
+**Significancia estadística ≠ relevancia sustantiva. Ojo con esto** para
+quien hace política pública y trabaja con grandes bases de datos.
+
+### Ejercicio: ¿el ingreso y el tipo de colegio son independientes?
+
+```{r no-independientes}
+conj2 <- prop.table(table(TipoColegio = d18$TipoColegio_f,
+                          Ingreso_alto =ifelse(d18$ingreso >= 8, "Alto", "Bajo")))
+kable(round(addmargins(conj2), 4),
+      caption = "Tipo de colegio × hogar de ingreso alto")
+
+mx <- margin.table(conj2, 1); my <- margin.table(conj2, 2)
+kable(round(conj2 - outer(as.vector(mx), as.vector(my)), 4),
+      caption = "Desviación respecto de la independencia: ahora es grande")
+
+test <- chisq.test(table(TipoColegio = d18$TipoColegio_f,
+                         Ingreso_alto =ifelse(d18$ingreso >= 8, "Alto", "Bajo")))
+test
+
+V_cramer <- sqrt(as.numeric(test$statistic) /
+                   (sum(test$observed) * (min(dim(test$observed)) - 1)))
+c(V_de_Cramer = V_cramer)
+```
+
+------------------------------------------------------------------------
+
+# Distribuciones condicionales y la media condicional
+
+La distribución condicional describe cómo se distribuye una variable $Y$
+cuando conocemos el valor que toma otra variable $X$.
+
+$$f(y \mid x) = \frac{f(x,y)}{f_X(x)}$$
+
+Cuando $X$ e $Y$ **no son independientes**, la distribución de $Y$ puede
+cambiar dependiendo del valor de $X$.
+
+En el ejemplo anterior, la distribución de las personas según el **tipo
+de colegio** es diferente dependiendo del **nivel de ingreso**.
+
+## La media condicional
+
+$$E(y \mid x) = \sum_y y\, f(y \mid x)$$
+
+La media condicional es la media de la distribución de una variable,
+**condicionada al valor de otra variable**.
+
+Calculemos $E(\text{puntaje} \mid \text{ingreso})$ (sin ningún modelo
+aún), promediando dentro de cada grupo:
+
+```{r media-condicional}
+media_cond <- d18 |>
+  filter(!is.na(ingreso)) |>
+  group_by(ingreso) |>
+  summarise(n = n(),
+            E_puntaje  = mean(puntaje),
+            sd_puntaje = sd(puntaje),
+            .groups = "drop")
+
+kable(media_cond, digits = 1,
+      caption = "E(puntaje | ingreso): la media condicional, calculada directamente")
+```
+
+```{r media-condicional-plot, fig.height=4.2}
+ggplot(media_cond, aes(x = ingreso, y = E_puntaje)) +
+  geom_line(colour = "grey60", linewidth = 0.6) +
+  geom_point(aes(size = n), colour = "steelblue", alpha = 0.85) +
+  scale_x_continuous(breaks = 1:10) +
+  labs(title = "La función de media condicional E(puntaje | ingreso)",
+       subtitle = "DEMRE 2018",
+       x = "Tramo de ingreso del hogar", 
+       y = "E(puntaje | ingreso)", 
+       size = "N") +
+  theme_minimal(base_size = 11)
+```
+
+Observa la forma en **U asimétrica**: el puntaje baja levemente entre
+los tramos 1 y 5, y luego sube con fuerza. Una recta ajustaría mal esta
+relación. Ése es un problema de **error de especificación de la forma
+funcional**.
+
+## La distribución condicional completa
+
+La media condicional resume, pero falta información. La distribución
+condicional completa muestra que la **dispersión** también cambia con
+$x$:
+
+```{r dist-condicional, fig.height=4.2}
+d18 |>
+  filter(!is.na(ingreso), ingreso %in% c(1, 4, 7, 10)) |>
+  mutate(tramo = factor(ingreso, labels = paste("Tramo", c(1, 4, 7, 10)))) |>
+  ggplot(aes(x = puntaje, colour = tramo)) +
+  geom_density(linewidth = 0.9) +
+  labs(title = "Distribuciones condicionales f(puntaje | ingreso)",
+       subtitle = "No sólo se mueve la media: también cambian la dispersión y la forma",
+       x = "Puntaje ponderado", y = "f(puntaje | ingreso)", colour = NULL) +
+  theme_minimal(base_size = 11) + theme(legend.position = "bottom")
+```
+
+------------------------------------------------------------------------
+
+# Ejercicios
+
+## Ejercicio 1: Función de probabilidad y CDF
+
+a.  Construye la función de probabilidad de `TipoColegio` y verifica los
+    dos axiomas.
+b.  Construye la CDF de `pj3` y `pj4` y ponlas en un mismo gráfico.
+
+## Ejercicio 2: Momentos y propiedades
+
+Calcula media, mediana, varianza poblacional, asimetría y kurtosis
+estandarizadas para `pj4` (Matemática) y compara con `pj3` (Lenguaje).
+¿Cuál se aleja más de la normalidad?
+
+## Ejercicio 3: Distribuciones conjunta, marginal y condicional
+
+Construye la distribución conjunta de `TipoColegio_f` (X) y una versión
+discretizada del puntaje (Y): `alto = puntaje >= 700`.
+
+a.  Reporta la conjunta, las dos marginales y
+    $f(\text{alto} \mid \text{TipoColegio})$.
+b.  ¿Cuál es la probabilidad de superar 700 puntos condicional en venir
+    de colegio municipal? ¿Y de particular pagado?.
+c.  Verifica que las probabilidades condicionales suman 1 dentro de cada
+    categoría de dependencia.
+
+## Ejercicio 4: Media condicional y forma funcional
+
+Calcula la media del puntaje condicional a los años de escolaridad de la
+madre $E(\text{puntaje} \mid \text{edumama\_anios})$ para un año y
+grafícalo.
