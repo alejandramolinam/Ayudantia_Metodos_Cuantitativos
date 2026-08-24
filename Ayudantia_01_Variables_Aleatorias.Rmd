@@ -1,6 +1,9 @@
 ---
+# ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+# Para modificarlo, editar el solucionario y volver a ejecutar
+# generar_version_estudiantes.R
 title: "Ayudantía 1 — Variables aleatorias, distribuciones y esperanza condicional en R"
-subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+subtitle: "Métodos Cuantitativos - Doctorado en Políticas Públicas - Universidad del Desarrollo"
 author: "Alejandra Molina"
 date: "`r format(Sys.Date(), '%d-%m-%Y')`"
 output:
@@ -17,13 +20,6 @@ editor_options:
     wrap: 72
 ---
 
-```{=html}
-<!-- ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
-     Fuente: Ayudantia_01_Variables_Aleatorias_SOLUCIONARIO.Rmd
-     Para modificarlo, edite el solucionario y vuelva a ejecutar
-     generar_version_estudiantes.R -->
-```
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   echo    = TRUE,
@@ -34,6 +30,7 @@ knitr::opts_chunk$set(
   fig.width  = 7,
   fig.height = 4.2
 )
+
 options(scipen = 999, digits = 4)
 set.seed(2026)   # reproducibilidad: TODA simulación debe llevar semilla
 ```
@@ -42,7 +39,7 @@ set.seed(2026)   # reproducibilidad: TODA simulación debe llevar semilla
 > `Clase2-Estimación.pdf`
 >
 > **Base de datos:** `data_DEMRE_seg.csv` (postulantes al sistema de
-> admisión universitaria, Chile, 2012–2018)
+> admisión universitaria, Chile, 2016–2018)
 >
 > **Objetivo:** dejar la base de datos en condiciones de ser analizada,
 > y luego implementar en R: momentos estadísticos, función de
@@ -76,7 +73,7 @@ proyecto automáticamente.
 **Paso 2: Poner los archivos adentro.** Copia a esa carpeta los dos
 archivos que están en el github del curso:
 
-`data_DEMRE_todos.csv` y este mismo `.Rmd`. Debería quedarte así:
+`data_DEMRE_seg.csv` y este mismo `.Rmd`. Debería quedarte así:
 
 ```         
 Metodos_Cuantitativos/
@@ -108,15 +105,24 @@ línea `install.packages()` y ejecútala. Después vuelve a comentarla,
 para que no reinstale en cada ejecución.
 
 ```{r paquetes}
-# Limpiar el entorno
-rm(list = ls())
-
-# Cargar paquetes
 # install.packages(c("dplyr", "ggplot2", "knitr"))  # sólo la 1a vez
 library(dplyr)
 library(ggplot2)
 library(knitr)
 ```
+
+> **Por qué aquí no va `rm(list = ls())`.** Es tentador partir
+> "limpiando el entorno", pero dentro de un `.Rmd` no hace falta y
+> además rompe cosas: cada vez que presionas `Knit`, RStudio abre una
+> **sesión de R nueva y vacía**, así que no hay nada que limpiar. Peor
+> aún, `rm(list = ls())` borra también los objetos que el propio
+> documento necesita —entre ellos `params`, que R crea a partir del
+> encabezado YAML—, y la compilación falla.
+>
+> Si lo que quieres es asegurarte de que tu código corre desde cero, la
+> forma correcta es `Session` → `Restart R` (`Ctrl+Shift+F10`): eso sí
+> descarta los paquetes cargados y las opciones cambiadas, cosa que
+> `rm(list = ls())` nunca hizo.
 
 **Paso 5: Probar el `Knit`.** Presiona el botón **Knit** en la barra
 superior del editor. Si el documento se compila y se abre en una
@@ -150,7 +156,7 @@ str(demre_raw, give.attr = FALSE)
 
 | Variable | Contenido | Posibles valores |
 |-----------------------|--------------------------|------------------------|
-| `year` | Año del proceso de admisión | 2012–2018 |
+| `year` | Año del proceso de admisión | 2016–2018 |
 | `mrun` | Identificador anonimizado de la persona | Números |
 | `carrera`, `Career_ID` | Código de la carrera matrículada | 2.003 carreras distintas |
 | `puntaje` | Puntaje ponderado de postulación | 150 a 850 (puede ser más en caso de bonificaciones) |
