@@ -38,7 +38,7 @@ set.seed(2026)   # reproducibilidad: TODA simulación debe llevar semilla
 > **Cátedras de referencia:** `Clase1-Variables Aleatorias.pdf` y
 > `Clase2-Estimación.pdf`
 >
-> **Base de datos:** `data_DEMRE_seg.csv` (postulantes al sistema de
+> **Base de datos:** `data_DEMRE_seg.csv` (matriculados en el sistema de
 > admisión universitaria, Chile, 2016–2018)
 >
 > **Objetivo:** dejar la base de datos en condiciones de ser analizada,
