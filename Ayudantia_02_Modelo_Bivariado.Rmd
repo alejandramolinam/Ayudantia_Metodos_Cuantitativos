@@ -1,0 +1,633 @@
+---
+# ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+# Para modificarlo, editar el solucionario y volver a ejecutar
+# generar_version_estudiantes.R
+title: "Ayudantía 2 — El modelo de regresión lineal bivariado en R"
+subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+author: "Alejandra Molina"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2
+)
+
+options(scipen = 999, digits = 4)
+set.seed(2026)   # reproducibilidad: TODA simulación debe llevar semilla
+```
+
+> **Cátedra de referencia:** `Clase3-Modelo Bivariado.pdf`
+>
+> **Base de datos:** `demre2018.rds` la base ya limpia y restringida a
+> un solo año, que dejamos guardada al final de la Ayudantía 1.
+>
+> **Objetivo:** pasar del promedio condicional $E(Y \mid X)$ que vimos
+> en la Ayudantía 1 al **modelo de regresión bivariado**: estimar
+> $\hat\alpha$ y $\hat\beta$ por Mínimos Cuadrados Ordinarios a mano y
+> con `lm()`, verificar en los datos las propiedades algebraicas de los
+> residuos, descomponer la varianza en $STC = SEC + SRC$ e interpretar
+> el $R^2$.
+
+------------------------------------------------------------------------
+
+# Preparación: cargar la base limpia
+
+En la Ayudantía 1 hicimos todo el trabajo sucio: detectamos el problema
+de escala del año 2017, convertimos en `NA` los ceros que en realidad
+eran "sin datos", creamos los años de escolaridad de los padres y
+etiquetamos los factores. Ese trabajo terminó en dos archivos guardados:
+
+```         
+demre_limpio.rds   <- los tres años limpios (pooled cross-section)
+demre2018.rds      <- sólo el año 2018 (corte transversal)
+```
+
+Hoy **no volvemos a limpiar nada**. Ésa es toda la gracia de haber
+guardado el `.rds`: el trabajo de limpieza se hace una vez y se
+reutiliza.
+
+```{r paquetes}
+# install.packages(c("dplyr", "ggplot2", "knitr"))  # sólo la 1a vez
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+```{r cargar}
+d18 <- readRDS("demre2018.rds")
+
+dim(d18)
+```
+
+> **Por qué `.rds` y no `.csv`.** Un `.csv` no guarda tipos: al
+> releerlo, `sexo_f` y `TipoColegio_f` vuelven a ser texto y hay que
+> declararlos factores otra vez. El `.rds` guarda el objeto de R tal
+> cual, con sus factores, sus niveles y sus `NA` ya en su lugar.
+
+## La muestra con la que vamos a hacer las estimaciones
+
+Trabajaremos en esta clase con este par de variables:
+
+- $Y$ = `puntaje` -\> puntaje ponderado de postulación.
+- $X$ = `edumama_anios` -\> años de escolaridad de la madre.
+
+Los `NA` no se pueden promediar, así que primero nos quedamos con las
+observaciones que tienen **ambas** variables.
+
+La función `lm` lo hace internamente pero de todas maneras es
+conveniente saber cuantas observaciones realmente están entrando a la
+regresión. Y filtrar nos permitirá además estimar los parámetros
+manualmente.
+
+```{r muestra-modelo}
+dd <- d18 |> filter(!is.na(puntaje), !is.na(edumama_anios))  
+c(n_d18 = nrow(d18), n_modelo = nrow(dd), perdidas = nrow(d18) - nrow(dd))
+```
+
+------------------------------------------------------------------------
+
+# Del promedio condicional a la recta de regresión
+
+## Dónde quedamos
+
+En el ejercicio 4 de la Ayudantía 1 había que calcular la **media
+condicional** del puntaje con la educación de la mamá
+$E(\text{puntaje} \mid \text{edumama\_anios})$: para cada valor de $X$,
+el promedio de $Y$ entre quienes tienen ese valor.
+
+```{r media-condicional}
+mc <- dd |>
+  group_by(edumama_anios) |>
+  summarise(n = n(), E_puntaje = mean(puntaje), .groups = "drop")
+
+kable(mc, digits = 2,
+      col.names = c("Escolaridad madre (X)", "n", "E(puntaje | X)"))
+```
+
+Veamos esa tabla en un gráfico. Cada circulo es el promedio de $Y$
+dentro de un subgrupo de $X$, y el **tamaño del círculo es proporcional
+al número de casos** de ese subgrupo: así podemos saber cuáles promedios
+están calculados con mucha gente y cuáles con pocas observaciones.
+
+```{r media-condicional-grafico}
+ggplot(mc, aes(x = edumama_anios, y = E_puntaje, size = n)) +
+  geom_point(colour = "steelblue", alpha = 0.85) +
+  scale_size_area(max_size = 14) +
+  labs(title = "Promedio de puntaje por años de escolaridad de la madre",
+       subtitle = "El área del círculo es proporcional al n del subgrupo",
+       x = "Años de escolaridad de la madre",
+       y = "E(puntaje | X)", size = "N") +
+  theme_minimal(base_size = 11)
+```
+
+> **Por qué el tamaño importa:** Los promedios de 1 y 3 años de
+> escolaridad aparecen como puntos diminutos: son promedios calculados
+> con muy pocos casos. Cuando estimemos la recta, MICO les dará poco
+> peso.
+
+`edumama_anios` **no toma todos los valores entre 1 y 18**. Sólo
+aparecen ocho valores (1, 3, 8, 12, 13, 14, 16, 18), porque la variable
+original era categórica y se tradujo a años desde `edumama`. Es una
+escala codificada, no una medición continua.
+
+## El modelo condicional
+
+En muchos problemas bivariados las dos variables son intercambiables: la
+distribución del peso dada la altura es tan interesante como la de la
+altura dado el peso. Pero hay casos en que **sólo una dirección tiene
+sentido teórico**. El gasto en alimentos de un hogar depende de su
+ingreso; el ingreso no depende del gasto en alimentos. Ahí escribimos:
+
+$$E(Y \mid X) = g(X)$$
+
+Y si además suponemos que esa esperanza condicional es **lineal en**
+$X$:
+
+$$E(Y_i \mid X_i) = \alpha + \beta X_i$$
+
+La tabla de arriba tiene ocho promedios condicionales sueltos, el modelo
+bivariado propone resumirlos con **dos números**, $\alpha$ y $\beta$.
+
+![](Esperanza_condicional.png)
+
+## El término de error
+
+Si la persona $i$ obtiene efectivamente $Y_i$, para su valor de $X_i$,
+la discrepancia entre lo que obtuvo y lo que el modelo predice para ella
+se llama **perturbación estocástica**:
+
+$$u_i = Y_i - E(Y_i \mid X_i) = Y_i - \alpha - \beta X_i$$
+
+Este es el modelo poblacional:
+
+$$\boxed{\;Y_i = \alpha + \beta X_i + u_i\;}$$
+
+El término $u_i$ recoge **la influencia neta de todo lo demás que no
+está en el modelo que está influenciando el valor** $Y_i$.
+
+$$E(u_i) = 0, \qquad \operatorname{var}(u_i) = \sigma^2, \qquad
+\operatorname{cov}(u_i, u_j) = 0 \;\; (i \neq j)$$
+
+que se resume en $u_i \sim iid\,(0, \sigma^2)$.
+
+## Los diez supuestos del Modelo Clásico de Regresión Lineal
+
+Son las condiciones bajo las cuales los resultados del modelo de
+regresión lineal son válidos, **no son descripciones de la realidad**.
+Buena parte del resto del curso (heterocedasticidad, autocorrelación,
+error de especificación) consiste estudiar qué pasa cuando alguno falla.
+
+| \# | Supuesto | Formalmente |
+|:-----------------------|:-----------------------|:-----------------------|
+| 1 | Lineal en los **parámetros** | $Y = \alpha + \beta X + u$ |
+| 2 | $X$ fijo en muestreo repetido (no estocástico) | — |
+| 3 | Media condicional del error nula | $E(u_i \mid X_i) = 0$ |
+| 4 | Homocedasticidad | $\operatorname{var}(u_i \mid X_i) = \sigma^2$ |
+| 5 | No autocorrelación | $\operatorname{cov}(u_i, u_j \mid X_i, X_j) = 0$ |
+| 6 | Error no correlacionado con $X$ | $\operatorname{cov}(u_i, X_i) = 0$ |
+| 7 | Más observaciones que parámetros | $n > k$ |
+| 8 | Variabilidad en $X$ | $0 < \operatorname{var}(X) < \infty$ |
+| 9 | Modelo correctamente especificado | — |
+| 10 | Sin multicolinealidad perfecta | (relevante desde el multivariado) |
+
+OJO: El supuesto 1 dice **lineal en los parámetros**, no en las
+variables. $Y = \alpha + \beta X^2 + u$ es un modelo lineal estimable
+por MICO. $Y = \alpha + X^\beta + u$ no lo es.
+
+------------------------------------------------------------------------
+
+# Estimación por MICO "a mano"
+
+## El problema de minimización
+
+Los valores verdaderos $\alpha$ y $\beta$ son desconocidos. Elegimos
+estimadores $\hat\alpha, \hat\beta$ que minimicen la suma de residuos al
+cuadrado:
+
+$$\min_{\hat\alpha, \hat\beta} \sum \hat u_i^2 =
+\sum \left( Y_i - \hat\alpha - \hat\beta X_i \right)^2$$
+
+Las condiciones de primer orden son
+
+$$\frac{\partial \sum \hat u_i^2}{\partial \hat\alpha} =
+-2 \sum \left( Y_i - \hat\alpha - \hat\beta X_i \right) = 0
+\qquad\text{(i)}$$
+
+$$\frac{\partial \sum \hat u_i^2}{\partial \hat\beta} =
+-2 \sum X_i \left( Y_i - \hat\alpha - \hat\beta X_i \right) = 0
+\qquad\text{(ii)}$$
+
+y al resolver el sistema se llega a las fórmulas que usaremos:
+
+$$\boxed{ \hat\beta = \frac{\sum x_i y_i}{\sum x_i^2}, \qquad
+\hat\alpha = \bar Y - \hat\beta \bar X }$$
+
+donde $x_i = X_i - \bar X$ e $y_i = Y_i - \bar Y$ son las variables **en
+desvíos respecto de su media**.
+
+## La tabla de sumas
+
+Casi todas las fórmulas requieren de estas sumas:
+
+$\sum X_i$, $\sum Y_i$, $\sum X_i Y_i$, $\sum X_i^2$,$\sum x_i$,
+$\sum y_i$, $\sum x_i y_i$, $\sum x_i^2$.
+
+```{r definir-XY}
+Y <- dd$puntaje          # variable dependiente
+X <- dd$edumama_anios    # variable explicativa
+Ym <- mean(Y)           # medias    
+Xm <- mean(X)
+y <- Y - Ym          # desvíos respecto de la media
+x <- X - Xm
+```
+
+```{r definir-sumas}
+n <- length(Y)
+
+sumX <- sum(X)
+sumY <- sum(Y)
+sumXY <- sum(X*Y)
+sumX2 <- sum(X^2)
+
+sumx <- sum(x)
+sumy <- sum(y)
+sumxy <- sum(x*y)
+sumx2 <- sum(x^2)
+
+
+data.frame(
+  cantidad = c("n", "sum(X)", "sum(Y)", "media X", "media Y",
+               "sum(X*Y)", "sum(X^2)", 
+               "sumx","sumy","sum(x*y)", "sum(x^2)"),
+  valor = c(n, sumX, sumY, Xm, Ym, sumXY, sumX2,
+            sumx,sumy,sumxy,sumx2)
+) |> kable(digits = 2,
+           format.args = list(big.mark = ".", decimal.mark = ","))
+
+```
+
+## Las dos identidades algebraicas
+
+Verifiquemos en nuestros datos los dos resultados que permiten pasar de
+la fórmula larga a la fórmula en desvíos:
+
+$$\sum x_i y_i = \sum X_i Y_i - \frac{\sum X_i \sum Y_i}{n}
+\qquad\qquad
+\sum x_i^2 = \sum X_i^2 - \frac{\left(\sum X_i\right)^2}{n}$$
+
+```{r identidades}
+c(sum_xy         = sumxy,
+  version_larga  = sumXY - sumX*sumY/n,
+  sum_x2         = sumx2,
+  version_larga2 = sumX2 - (sumX)^2/n)
+```
+
+Coinciden. No es un detalle: es lo que garantiza que a través de la
+fórmula corta y la larga se calcule **el mismo estimador**.
+
+## Estimación
+
+Ahora aplicamos las fórmulas, de las dos maneras:
+
+```{r mico-manual}
+# forma larga, tal como sale de resolver el sistema de minimización
+beta_largo <- (n*sumXY - sumX*sumY) / (n*sumX2 - sumX^2)
+
+# forma en desvíos
+beta_hat  <- sumxy / sumx2
+alpha_hat <- Ym - beta_hat * Xm
+
+c(beta_forma_larga = beta_largo,
+  beta_en_desvios  = beta_hat,
+  alpha_hat        = alpha_hat)
+```
+
+**Interpretación:**
+
+$\hat\beta$ está en unidades de $Y$ por unidad de $X$ (puntos por año de
+escolaridad).
+
+$\hat\beta = 5{,}05$: con un año más de escolaridad de la madre, el
+puntaje promedio aumenta en **5 puntos**.
+
+$\hat\alpha = 546{,}7$ sería el puntaje esperado de alguien cuya madre
+tiene **cero** años de escolaridad.
+
+# La función `lm()` y cómo leer su salida
+
+Todo lo anterior lo hace `lm()` en una línea.
+
+```{r lm-modelo}
+m1 <- lm(puntaje ~ edumama_anios, data = dd)
+
+coef(m1)
+```
+
+```{r parametros-comparacion}
+c(alpha_a_mano=alpha_hat, alpha_lm=coef(m1)[[1]]) 
+c(beta_a_mano=beta_hat, beta_lm=coef(m1)[[2]])
+```
+
+La función `lm` entrega mucha información, que la podemos mirar con
+`summary`.
+
+```{r lm-summary}
+summary(m1)
+```
+
+Qué significan estos resultados:
+
+- **`Estimate`** : coeficientes $\hat\alpha$ y $\hat\beta$.
+- **`Std. Error`:** es la raíz de la varianza del parámetro
+  $\operatorname{var}(\hat\alpha)$, $\operatorname{var}(\hat\beta)$.
+- **`Residual standard error: 79.64 on 91089 degrees of freedom`** : es
+  $\hat\sigma$, y los grados de libertad son $n - 2$ (porque se están
+  estimando 2 parámetros).
+- **`Multiple R-squared: 0.02457`** es el $R^2$ .
+- **`t value`, `Pr(>|t|)`** Lo veremos más adelante, tiene que ver con
+  la significancia de los parámetros.
+- `F-statistic: 2.29e+03 on 1 and 91089 DF,  p-value: <0.0000000000000002`
+  : test de significancia del modelo completo.
+
+Veamos la recta sobre los datos, junto a los promedios condicionales que
+calculamos al principio:
+
+```{r grafico-recta}
+mc$ajustado <- coef(m1)[[1]] + coef(m1)[[2]] * mc$edumama_anios
+
+ggplot(mc, aes(x = edumama_anios)) +
+  geom_point(aes(y = E_puntaje, size = n), colour = "steelblue", alpha = 0.85) +
+  geom_line(aes(y = ajustado), colour = "firebrick", linewidth = 0.9) +
+  scale_size_area(max_size = 14) +
+  labs(title = "La recta de MICO frente a los promedios condicionales",
+       subtitle = "Puntos: E(puntaje | X) observado. Línea: la recta estimada",
+       x = "Años de escolaridad de la madre",
+       y = "Puntaje promedio", size = "N") +
+  theme_minimal(base_size = 11)
+```
+
+> **Qué muestra este gráfico.** La recta resume los ocho promedios
+> condicionales, pero no pasa por todos. Los dos valores bajos (1 y 3
+> años) están **muy por encima** de la recta, y tienen muy pocos casos
+> (125 y 88). MICO minimiza la suma de cuadrados sobre las 91 mil
+> observaciones, así que esas dos medias casi no pesan. El supuesto 1,
+> que $E(Y \mid X)$ es lineal, es una **aproximación**.
+
+------------------------------------------------------------------------
+
+# Error vs. residuo: las propiedades algebraicas
+
+## La distinción que más se confunde
+
+$$u_i = Y_i - \alpha - \beta X_i
+\qquad\text{vs.}\qquad
+\hat u_i = Y_i - \hat\alpha - \hat\beta X_i$$
+
+|   | Error $u_i$ | Residuo $\hat u_i$ |
+|:-----------------------|:-----------------------|:-----------------------|
+| Se construye con | los parámetros **verdaderos** | los parámetros **estimados** |
+| ¿Se observa? | **No**, nunca | **Sí**, lo calculamos |
+| Qué es | variable aleatoria desconocida | número que define el investigador |
+
+Los residuos son lo único que podemos conocer. Todo el diagnóstico del
+semestre: heterocedasticidad, autocorrelación, normalidad, se hace
+mirando $\hat u$ para conjeturar sobre $u$.
+
+La función `lm()` ya guarda tanto los valores de Y ajustados y los
+residuos: `fitted(m1)` son los ajustados y `resid(m1)` los residuos.
+
+```{r residuos}
+Y_hat <- alpha_hat + beta_hat * X   # ajustados "a mano"
+u_hat <- Y - Y_hat                  # residuos "a mano"
+ 
+Y_hat_lm <- fitted(m1)   # ajustados con lm
+u_hat_lm <- resid(m1)   # residuos con lm   
+
+
+# Veamos los primeros 10 valores y su ajuste con el modelo
+head(data.frame(X, Y, Y_hat, u_hat, Y_hat_lm, u_hat_lm), 10) |> kable(digits = 3)
+```
+
+## Las propiedades que se cumplen siempre
+
+Estas tres no son resultados empíricos ni dependen de ningún supuesto
+sobre $u$: salen **directamente de las condiciones de primer orden**, y
+por lo tanto se cumplen en cualquier base de datos, siempre que el
+modelo tenga intercepto.
+
+**(1) Los residuos suman cero:** $\sum \hat u_i = 0$.
+
+**(2) Los residuos son ortogonales a** $X$: $\sum X_i \hat u_i = 0$.
+
+**(3) La recta pasa por el punto medio** $(\bar X, \bar Y)$ : viene de
+$\hat\alpha = \bar Y - \hat\beta \bar X$, y por lo tanto
+$\overline{\hat Y} = \bar Y$.
+
+```{r propiedades}
+c(suma_residuos      = sum(u_hat),
+  suma_X_por_u       = sum(X * u_hat),
+  media_ajustados    = mean(Y_hat),
+  media_observados   = mean(Y))
+```
+
+> **Por qué no dan exactamente cero.** Los dos primeros valores son del
+> orden de $10^{-8}$, no cero. Eso no es un error: es **aritmética de
+> punto flotante**. R guarda los números con precisión finita y al sumar
+> 91.091 términos los errores de redondeo se acumulan. La forma correcta
+> de verificar una identidad numérica en un computador es comparar
+> contra una tolerancia:
+
+```{r propiedades-tolerancia}
+c(suma_u_es_cero    = abs(sum(u_hat))     < 1e-7,
+  ortogonalidad     = abs(sum(X * u_hat)) < 1e-7,
+  pasa_por_la_media = abs(mean(Y_hat) - mean(Y)) < 1e-7)
+```
+
+------------------------------------------------------------------------
+
+# Descomposición de la varianza y el $R^2$
+
+## Las tres sumas de cuadrados
+
+$$STC = \sum (Y_i - \bar Y)^2 \qquad
+SEC = \sum (\hat Y_i - \bar Y)^2 \qquad
+SRC = \sum (Y_i - \hat Y_i)^2 = \sum \hat u_i^2$$
+
+- **STC** (total): cuánto varía $Y$ en total. Es lo que queremos
+  explicar.
+- **SEC** (explicada): cuánto de esa variación reproduce el modelo.
+- **SRC** (residual): cuánto queda sin explicar.
+
+En el modelo con intercepto estimado por MICO:
+
+$$STC = SEC + SRC$$
+
+Verifiquémoslo:
+
+```{r descomposicion}
+STC <- sum((Y - Ym)^2)
+SEC <- sum((Y_hat - Ym)^2)
+SRC <- sum(u_hat^2)
+
+c(STC = STC, SEC = SEC, SRC = SRC,
+  SEC_mas_SRC = SEC + SRC, diferencia = STC - (SEC + SRC))
+```
+
+## El coeficiente de determinación
+
+$$R^2 = \frac{SEC}{STC} = 1 - \frac{SRC}{STC}$$
+
+```{r r2}
+c(R2_SEC_sobre_STC = SEC / STC,
+  R2_1_menos_SRC   = 1 - SRC / STC,
+  R2_de_lm              = summary(m1)$r.squared, # desde lm
+  corr_al_2 = cor(X, Y)^2)
+```
+
+OJO: La igualdad $R^2 = r^2$ **sólo aplica en el modelo bivariado.** En
+el multivariado deja de tener sentido porque hay varias $X$.
+
+#### **Interpretación**
+
+La escolaridad de la madre explica **2,5%** de la varianza del puntaje.
+Es muy poco, eso significa que el modelo no sirve? No:
+
+1.  $R^2$ y tamaño del efecto son cosas distintas. El efecto es de 5
+    puntos por año. Entre una madre con 8 años de escolaridad y una con
+    18 hay 10 años, o sea **50 puntos de diferencia esperada**, más de
+    media desviación estándar de la distribución de puntajes. Eso es
+    enorme en política pública. Lo que dice el $R^2$ bajo es que
+    *dentro* de cada nivel de escolaridad materna sigue habiendo
+    muchísima dispersión, no que la escolaridad materna no importe.
+
+2.  **Con datos individuales el** $R^2$ siempre es bajo. Estamos
+    prediciendo el puntaje de una **persona**, y las personas son
+    variables y hay muchas cosas que influyen en su puntaje. Un $R^2$ de
+    0,02 en un corte transversal de 91 mil individuos es normal, el
+    mismo modelo con datos agregados por comuna daría un $R^2$ mayor sin
+    que la relación subyacente haya cambiado.
+
+3.  **El** $R^2$ no dice nada sobre causalidad. Se puede tener $R^2$ de
+    0,95 en una regresión sin ningún sentido causal, y $R^2$ de 0,02 en
+    un excelente experimento aleatorizado.
+
+------------------------------------------------------------------------
+
+# $\hat\sigma^2$ y la precisión de $\hat\beta$
+
+## El tercer parámetro
+
+El modelo tiene tres parámetros: $\alpha$, $\beta$ y
+$\sigma^2 = \operatorname{var}(u_i)$. Como los errores no se observan,
+$\sigma^2$ se estima con los residuos:
+
+$$\hat\sigma^2 = \frac{\sum \hat u_i^2}{n - 2} = \frac{SRC}{n-2}$$
+
+```{r sigma2}
+s2 <- SRC / (n - 2)
+
+c(sigma2_hat = s2,
+  sigma_hat  = sqrt(s2),
+  sigma_de_lm = summary(m1)$sigma)  # desde lm
+```
+
+## La varianza del estimador
+
+$$\operatorname{var}(\hat\beta) = \frac{\sigma^2}{\sum x_i^2}$$
+
+que estimamos reemplazando $\sigma^2$ por $\hat\sigma^2$:
+
+```{r var-beta}
+var_beta <- s2 / sum(x^2)
+
+c(var_beta = var_beta,
+  ee_beta  = sqrt(var_beta),
+  ee_de_lm = summary(m1)$coefficients["edumama_anios", "Std. Error"]) #desde lm
+```
+
+La varianza del parámetro se puede reescribir como:
+
+$$\operatorname{var}(\hat\beta) = \frac{\sigma^2}{\sum x_i^2}
+= \frac{\sigma^2}{n \cdot \operatorname{var}_p(X)}$$
+
+- **Más ruido** ($\sigma^2$ grande) $\rightarrow$ menos precisión.
+- **Más datos** ($n$ grande) $\rightarrow$ más precisión.
+- **Más variabilidad en** $X$ $\rightarrow$ más precisión. Éste es el
+  supuesto 8, y es el menos intuitivo: para medir una pendiente hay que
+  **tener palanca**. Si todas las madres tuvieran la misma escolaridad,
+  no habría forma de estimar el efecto de la escolaridad.
+
+```{r palanca}
+comparar_ee <- function(datos, etiqueta) {
+  m <- lm(puntaje ~ edumama_anios, data = datos)
+  data.frame(muestra = etiqueta,
+             beta = coef(m)[[2]],
+             n = nobs(m),
+             var_X  = var(datos$edumama_anios),
+             sigma = summary(m)$sigma, # sd residuos 
+             var_beta = summary(m)$coefficients[2, 2]^2) # var beta
+}
+
+bind_rows(
+  comparar_ee(dd, "completa"),
+  comparar_ee(dd |> slice_sample(n = 1000), "submuestra n = 1.000"),
+  comparar_ee(dd |> filter(edumama_anios >= 12, edumama_anios <= 14),
+              "X restringido a 12-14 años")
+) |> kable(digits = 4)
+```
+
+------------------------------------------------------------------------
+
+# Ejercicios
+
+## Ejercicio 1: estimar a mano y con `lm()`
+
+Estima el modelo $\text{puntaje}_i = \alpha + \beta\,
+\text{ingreso}_i + u_i$.
+
+a.  Calcula $\hat\alpha$ y $\hat\beta$ **a mano**, con las fórmulas en
+    desvíos, y verifica que coinciden con `lm()`.
+b.  ¿Cuántas observaciones se pierden por `NA` respecto de la base
+    completa? Compáralo con el modelo de `edumama_anios`.
+c.  Interpreta $\hat\beta$ en una frase. Compare con el resultado del
+    modelo `puntaje ~ edumama_anios`
+
+
+
+## Ejercicio 2: descomposición de la varianza
+
+Para el modelo $\text{puntaje} = \alpha + \beta\,\text{ingreso} + u$:
+
+a.  Calcula $STC$, $SEC$ y $SRC$ a mano y verifica $STC = SEC + SRC$.
+b.  Calcula el $R^2$ de las dos formas y compáralo con `summary()`.
+
+
+## Ejercicio 3: precisión 
+
+a.  Calcula $\hat\sigma^2$ y $\operatorname{var}(\hat\beta)$ a mano para
+    el modelo `puntaje ~ ingreso` y verifica con lo que entrega
+    `summary()`.
+b.  Toma tres submuestras aleatorias de $n = 200$, $2.000$ y $20.000$ y
+    reporta el error estándar de $\hat\beta$ en cada una. ¿A qué tasa
+    cae?
+
+
