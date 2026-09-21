@@ -1,0 +1,611 @@
+---
+# ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+# Para modificarlo, editar el solucionario y volver a ejecutar
+# generar_version_estudiantes.R
+title: "Ayudantía 3 — El modelo multivariado e inferencia sobre los parámetros"
+subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+author: "Alejandra Molina"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2
+)
+
+options(scipen = 999, digits = 4)
+set.seed(210)   # reproducibilidad: TODA simulación debe llevar semilla
+```
+
+> **Cátedras de referencia:**
+> `Clase5-Modelo de Regresión Multivariado.pdf` y
+> `Clase6-Propiedades de los Estimadores MICO.pdf` y
+> `Clase8-Inferencia en el Modelo Lineal.pdf`
+>
+> **Base de datos:** `demre2018.rds`, la base ya limpia que dejamos
+> guardada en la Ayudantía 1.
+>
+> ------------------------------------------------------------------------
+
+# Preparación de los datos
+
+```{r paquetes}
+# install.packages(c("dplyr", "ggplot2", "knitr"))  # sólo la 1a vez
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+Usaremos las siguientes variables:
+
+- $Y$ = `pj4`, el puntaje en la prueba de **Matemática**.
+- $X_2$ = `edumama_anios`, los años de escolaridad de la madre.
+- $X_3$ = `pj1`, el **NEM** (notas de enseñanza media).
+
+Queremos responder: el rendimiento en Matemática depende del desempeño
+escolar acumulado (NEM) y del entorno educacional del hogar (escolaridad
+de la madre).
+
+Vamos a trabajar con una muestra aleatoria de 5000 personas del año
+2018.
+
+```{r muestra}
+d18 <- readRDS("demre2018.rds")
+
+d18 <- d18 |> filter(!is.na(pj4), !is.na(edumama_anios), !is.na(pj1))
+
+dd <- slice_sample(d18, n = 5000, replace = FALSE)
+
+```
+
+------------------------------------------------------------------------
+
+# Por qué agregar variables
+
+Estimemos el modelo bivariado y agreguémosle el NEM:
+
+```{r simple-vs-multiple}
+m1 <- lm(pj4 ~ edumama_anios,       data = dd)   # bivariado
+m2 <- lm(pj4 ~ edumama_anios + pj1, data = dd)   # multivariado
+
+data.frame(
+  modelo     = c("bivariado", "multivariado"),
+  b_edumama  = c(coef(m1)[["edumama_anios"]], coef(m2)[["edumama_anios"]]),
+  b_NEM      = c(NA, coef(m2)[["pj1"]]),
+  ee_edumama = c(summary(m1)$coefficients["edumama_anios", 2],
+                 summary(m2)$coefficients["edumama_anios", 2]),
+  sigma_hat  = c(summary(m1)$sigma, summary(m2)$sigma),
+  R2         = c(summary(m1)$r.squared, summary(m2)$r.squared)
+) |> kable(digits = 4)
+```
+
+Pasan dos cosas:
+
+1.  El coeficiente de la escolaridad de la madre baja de 10,3 a 8,9. Se
+    mueve, pero poco.
+2.  El error estándar de ese mismo coeficiente baja de 0,44 a 0,39, y
+    $\hat\sigma$ baja de 78 a 69.8. Es decir, agregar el NEM nos dejó
+    estimando el efecto de la escolaridad materna con más precisión.
+
+Las dos cosas se explican porque las dos variables explicativas están
+poco correlacionadas.
+
+```{r corr-x}
+cor(dd$edumama_anios, dd$pj1)
+```
+
+**Es importante escoger variables explicativas poco correlacionadas.**
+Cuando dos variables explicativas se mueven juntas, agregar una al
+modelo puede afectar de forma significativa el coeficiente de la otra y
+aumentar los errores estándar.
+
+Al agregar variables explicativas poco correlacionadas el modelo mejora.
+En este caso el NEM explica una parte importante del puntaje de
+Matemática que antes quedaba en el residuo. Al incluirlo, la desviación
+estándar de los errores decrece ($\hat\sigma^2$), y con eso disminuyen
+todos los errores estándar del modelo, incluido el de la escolaridad
+materna, aunque el valor del parámetro de esa variable no cambie mucho.
+
+> **En resumen:** Agregar un regresor **relevante** y **poco
+> correlacionado** con el que te interesa sale casi gratis: no mueve tu
+> coeficiente y te da más precisión. Agregar uno **irrelevante** cuesta
+> un grado de libertad y no aporta nada.
+
+------------------------------------------------------------------------
+
+# El modelo en forma matricial
+
+$$Y = X\beta + u$$
+
+## Armar la matriz $X$
+
+En R la matriz $X$ se construye con `model.matrix()`. Consiste en una
+columna de unos para el intercepto, y una columna por cada variable
+explicativa.
+
+```{r matriz-X}
+Y <- dd$pj4
+X <- model.matrix(~ edumama_anios + pj1, data = dd)
+
+dim(X)
+head(X, 4)
+```
+
+```{r dimensiones}
+n <- nrow(X)   # observaciones
+k <- ncol(X)   # parámetros a estimar (incluye el intercepto)
+
+c(n = n, k = k)
+```
+
+> **Por qué importa que** $n \ggg k$. Si $n = k$ el sistema tendría
+> solución exacta y no sería necesario estimar nada. Estimamos
+> justamente porque hay muchas más ecuaciones que incógnitas.
+
+## La solución: $\hat\beta = (X'X)^{-1}X'Y$
+
+Las condiciones de primer orden del problema de mínimos cuadrados dan
+las **ecuaciones normales** $(X'X)\hat\beta = X'Y$, de donde:
+
+$$\hat\beta = (X'X)^{-1}X'Y$$
+
+En R, `t()` traspone, `%*%` multiplica matrices y `solve()` resuelve una
+ecuación matricial (y tambien sirve para invertir una matriz):
+
+```{r beta-manual}
+XtX <- t(X) %*% X
+XtY <- t(X) %*% Y
+
+XtX          # la matriz k x k que hay que invertir
+```
+
+```{r beta-manual-2}
+beta_manual <- solve(XtX, XtY)     # resuelve (X'X)b = X'Y
+
+# beta_manual <- solve(XtX) %*% XtY  #Esto tambien funciona pero es mas costoso computacionalmente
+
+data.frame(
+  a_mano     = as.vector(beta_manual),
+  lm         = coef(m2),
+  diferencia = as.vector(beta_manual) - coef(m2),
+  row.names  = rownames(beta_manual)
+) |> kable(digits = 6)
+```
+
+------------------------------------------------------------------------
+
+# Las propiedades de los residuos
+
+La suma de los residuos es cero y los residuos son ortogonales a todas
+las columnas de $X$. No es un supuesto ni un resultado empírico: es la
+solución del problema de minimización. Se cumple siempre.
+
+$$X'\hat u = 0$$
+
+```{r suma-residuos}
+u_hat <- resid(m2)
+
+c(suma_residuos   = sum(u_hat),
+  cov_con_edumama = sum(dd$edumama_anios * u_hat),
+  cov_con_NEM     = sum(dd$pj1 * u_hat))
+```
+
+- **Los residuos suman cero.**
+- **Los residuos no correlacionan con ninguna** $X$.
+
+No son exactamente cero sino de un orden de magnitud muy pequeño debido
+al error de redondeo de punto flotante al almacenar los números en el
+computador, acumulado sobre 5000 sumas.
+
+------------------------------------------------------------------------
+
+# Propiedades estadísticas de $\hat\beta$
+
+## Insesgamiento
+
+Reemplazando $Y = X\beta + u$ en la fórmula del estimador:
+
+$$\hat\beta = \beta + (X'X)^{-1}X'u$$
+
+Si las $X$ son fijas y $E(u) = 0$, el segundo término tiene esperanza
+cero y por lo tanto $E(\hat\beta) = \beta$.
+
+Con datos reales normalmente no conocemos $\beta$. Pero acá tenemos una
+ventaja: nuestra muestra `dd` salió de la base completa de 2018. Si
+tratamos esa base completa como **la población**, su parámetro
+"verdadero" es lo que se estima con todas sus observaciones. Y podemos
+repetir muchas veces lo mismo que hicimos al comienzo: sacar 5.000
+postulantes al azar de la base completa y estimar el modelo.
+
+```{r mc-insesgado}
+# El "parámetro verdadero": lo estimado con toda la base d18, la "población"
+beta_verdadero <- coef(lm(pj4 ~ edumama_anios + pj1, data = d18))
+
+# 1.000 muestras construidas igual que `dd`
+set.seed(2026)
+simulacion <- replicate(1000, {
+  s <- slice_sample(d18, n = 5000)
+  coef(lm(pj4 ~ edumama_anios + pj1, data = s))
+})
+
+data.frame(
+  verdadero      = beta_verdadero,
+  media_estimada = rowMeans(simulacion),
+  sd_estimada    = apply(simulacion, 1, sd),
+  nuestra_dd     = coef(m2)
+) |> kable(digits = 4)
+```
+
+Cada estimación individual se equivoca, pero el **promedio de 1.000
+estimaciones** cae prácticamente sobre el valor verdadero. Eso es
+insesgamiento: no significa acertar, significa no equivocarse
+sistemáticamente hacia un lado.
+
+## Cuándo falla: la variable omitida
+
+Repitamos la simulación, pero estimando en cada muestra también el
+modelo **sin** el NEM:
+
+```{r mc-omitida}
+sim2 <- replicate(1000, {
+  s <- slice_sample(d18, n = 5000)
+  c(completa = coef(lm(pj4 ~ edumama_anios + pj1, data = s))[["edumama_anios"]],
+    omitida  = coef(lm(pj4 ~ edumama_anios,       data = s))[["edumama_anios"]])
+})
+
+data.frame(
+  especificacion = c("completa", "omitiendo el NEM"),
+  beta2_estimado = rowMeans(sim2),
+  verdadero      = beta_verdadero[["edumama_anios"]]
+) |> kable(digits = 4, row.names = FALSE)
+```
+
+Hay sesgo, y no desaparece con más datos: da lo mismo cuántas
+observaciones tengamos.
+
+## La matriz de varianzas y covarianzas
+
+$$\operatorname{var}(\hat\beta) = \sigma_u^2 (X'X)^{-1}, \qquad
+\hat\sigma_u^2 = \frac{\hat u'\hat u}{n-k}$$
+
+Note el $n-k$ en el denominador: se pierde un grado de libertad por cada
+parámetro estimado. En el bivariado de la Ayudantía 2 era $n-2$, es el
+mismo resultado, generalizado.
+
+```{r sigma2}
+sigma2_hat <- sum(u_hat^2) / (n - k)
+
+c(sigma2_hat  = sigma2_hat,
+  sigma_hat   = sqrt(sigma2_hat),
+  sigma_de_lm = summary(m2)$sigma)
+```
+
+```{r vcov}
+V <- as.numeric(sigma2_hat) * solve(XtX)     # la matriz completa, k x k
+round(V, 8)
+```
+
+Los **errores estándar** son la raíz de la diagonal:
+
+```{r errores-estandar}
+data.frame(
+  ee_a_mano = sqrt(diag(V)),
+  ee_de_lm  = summary(m2)$coefficients[, "Std. Error"],
+  row.names = colnames(X)
+) |> kable(digits = 6)
+```
+
+> **Lo que está fuera de la diagonal también sirve.** Las covarianzas
+> entre coeficientes son las que permiten testear hipótesis que
+> involucran a varios parámetros a la vez , por ejemplo
+> $\beta_2 = \beta_3$. La usamos en la sección de inferencia, más abajo.
+> En R esta matriz se obtiene directo con `vcov(m2)`.
+
+```{r vcov-lm}
+all.equal(V, vcov(m2), check.attributes = FALSE)
+```
+
+# Bondad de ajuste: $R^2$ y $\bar R^2$
+
+La descomposición $STC = SEC + SRC$ de la Ayudantía 2 sigue valiendo
+igual, siempre que el modelo tenga intercepto:
+
+```{r descomposicion}
+STC <- sum((Y - mean(Y))^2)
+SEC <- sum((fitted(m2) - mean(Y))^2)
+SRC <- sum(u_hat^2)
+
+c(STC = STC, SEC_mas_SRC = SEC + SRC,
+  R2 = 1 - SRC / STC, R2_de_lm = summary(m2)$r.squared)
+
+abs(STC - (SEC + SRC)) < 1e-4     # la identidad se cumple
+```
+
+## El $R^2$ ajustado
+
+$$\bar R^2 = 1 - \left(\frac{n-1}{n-k}\right)(1 - R^2)$$
+
+El factor $(n-1)/(n-k)$ castiga por cada parámetro agregado.
+
+> **Para qué sirve y para qué no.** El $\bar R^2$ permite comparar
+> modelos con distinto número de variables **sobre la misma muestra**.
+> No permite comparar modelos con distinta variable dependiente (por
+> ejemplo `pj4` contra `log(pj4)`), ni estimados sobre muestras
+> distintas.
+
+------------------------------------------------------------------------
+
+# Inferencia en el modelo lineal
+
+Hasta aquí estimamos $\hat\beta$, calculamos su matriz de varianzas y
+evaluamos el ajuste del modelo. Pero dado el ruido de la muestra, ¿qué
+tan lejos está $\hat\beta$ de cero, o de cualquier otro valor que nos
+interese?
+
+## De dónde sale la distribución $t$
+
+$\hat\beta$ es una combinación lineal de los errores. Si esos errores
+son normales, $\hat\beta$ también lo es:
+
+$$\hat\beta \sim N\big(\beta,\ \sigma_u^2 (X'X)^{-1}\big)$$
+
+Si conociéramos $\sigma_u$, cada coeficiente estandarizado sería una
+normal estándar y se podría usar la tabla $Z$. Pero $\sigma_u$ no se
+conoce: hay que reemplazarlo por $\hat\sigma_u$, que es a su vez una
+variable aleatoria. Ese reemplazo es el que cambia la distribución de
+normal a $t$ con $n-k$ grados de libertad:
+
+$$t_j = \frac{\hat\beta_j - \beta_j^0}{ee(\hat\beta_j)} \sim t_{n-k}$$
+
+> La normalidad de los errores, que hasta ahora no habíamos necesitado
+> para nada, aparece acá, para poder hacer tests. La buena noticia es
+> que con muestras grandes el Teorema Central del Límite hace que la
+> aproximación funcione igual aunque los errores no sean normales. La
+> mala es que la fórmula de la varianza sí depende de la
+> homocedasticidad.
+
+## El test $t$, a mano
+
+El contraste más usado es el de **significancia**: $H_0: \beta_j = 0$.
+El estadístico es el coeficiente dividido por su error estándar, y el
+p-valor es la probabilidad de las dos colas:
+
+```{r test-t}
+ee     <- sqrt(diag(V))
+t_stat <- as.vector(beta_manual) / ee
+p_val  <- 2 * pt(-abs(t_stat), df = n - k)
+
+data.frame(
+  beta = as.vector(beta_manual),
+  ee   = ee,
+  t    = t_stat,
+  p    = ifelse(p_val < 1e-16, "<1e-16",
+                formatC(p_val, format = "e", digits = 2)),
+  row.names = colnames(X)
+) |> kable(digits = 4)
+```
+
+```{r test-t-lm}
+round(summary(m2)$coefficients[, 1:3], 4)    # estimación, ee y t de lm()
+```
+
+Los estadísticos $t$ son grandes: 22,4 para la escolaridad materna y
+35,1 para el NEM. Y los p-valores, indistinguibles de cero. Efectos de
+este tamaño se detectan sin dificultad con 5.000 observaciones. Y como
+el error estándar cae con $1/\sqrt{n}$, con muestras más grandes casi
+cualquier efecto que no sea exactamente cero termina siendo
+significativo.
+
+## Hipótesis distintas de cero, e intervalos de confianza
+
+$H_0: \beta_j = 0$ es sólo el caso más común, no el único. Acá hay una
+más interesante: en el modelo bivariado la escolaridad materna valía
+10,30 puntos y en el multivariado 8,90. ¿Es el efecto parcial
+genuinamente menor que 10 puntos, o la diferencia cabe dentro del error
+muestral?
+
+```{r test-valor}
+t_10 <- (beta_manual["edumama_anios", 1] - 10) / ee["edumama_anios"]
+p_10 <- 2 * pt(-abs(t_10), df = n - k)
+
+data.frame(t = unname(t_10),
+           p = formatC(unname(p_10), format = "e", digits = 2)) |>
+  kable(digits = 3, row.names = FALSE)
+```
+
+```{r intervalos}
+t_critico <- qt(0.975, df = n - k)
+
+ic <- cbind(inferior = as.vector(beta_manual) - t_critico * ee,
+            superior = as.vector(beta_manual) + t_critico * ee)
+rownames(ic) <- colnames(X)
+
+kable(ic, digits = 4)
+
+confint(m2)          # lo mismo, con la función de R
+```
+
+$t = -2{,}77$ y $p = 0{,}006$: se rechaza $H_0$ al 5%. El efecto parcial
+de la escolaridad materna es significativamente menor que 10 puntos.
+
+El intervalo de `edumama_anios`, [8,12; 9,68]: no contiene al 10. Un
+test bilateral al 5% rechaza $H_0: \beta_j = c$ cuando $c$ queda fuera
+del intervalo de confianza al 95%, y no la rechaza cuando queda dentro.
+Es la misma información presentada de dos maneras, y el intervalo suele
+ser más útil porque muestra todos los valores que son estadísticamente
+"iguales".
+
+El intervalo, además, **sí contiene** el 9,26 que se obtiene con la base
+completa: es lo que debería pasar en el 95% de las muestras. Con esa
+base completa, de 90.756 observaciones, el intervalo es [9,07; 9,44]:
+con unas dieciocho veces más datos, se angosta unas
+$\sqrt{18} \approx 4{,}3$ veces.
+
+## El test $F$: varias restricciones a la vez
+
+Cuando la hipótesis involucra más de un parámetro, el $t$ ya no sirve.
+El conjunto de restricciones se escribe $C\beta = \gamma$ y con esto se
+construye un estadístico $F$.
+
+El caso más conocido es la **significancia global**:
+$H_0: \beta_2 = \beta_3 = 0$, es decir, "ninguna variable explica nada".
+Con el modelo en desvíos el apunte llega a una expresión que sólo
+necesita el $R^2$:
+
+$$F = \frac{R^2/(k-1)}{(1-R^2)/(n-k)}$$
+
+```{r f-global}
+R2 <- summary(m2)$r.squared
+F_global <- (R2 / (k - 1)) / ((1 - R2) / (n - k))
+
+p_global <- pf(F_global, k - 1, n - k, lower.tail = FALSE)
+
+data.frame(F_a_mano  = F_global,
+           F_summary = unname(summary(m2)$fstatistic["value"]),
+           p         = ifelse(p_global < 1e-16, "<1e-16",
+                              formatC(p_global, format = "e", digits = 2))) |>
+  kable(digits = 2)
+```
+
+## Una restricción lineal entre coeficientes
+
+El $F$ sirve para cualquier hipótesis lineal, no sólo para "todo igual a
+cero".
+
+El NEM y la escolaridad de la madre están en unidades distintas (puntos
+de una prueba y años de estudio), pero podemos preguntarnos **cuántos
+puntos de NEM equivalen a un año de escolaridad materna**. La razón
+estimada es $8{,}90/0{,}374 \approx 23{,}8$. Contrastemos entonces
+$H_0: \beta_2 = 25\,\beta_3$, que se escribe $C\beta = 0$ con
+$C = (0,\ 1,\ -25)$:
+
+```{r restriccion}
+C <- matrix(c(0, 1, -25), nrow = 1)
+
+estimacion <- as.numeric(C %*% beta_manual)
+var_est    <- as.numeric(C %*% V %*% t(C))   # necesita la covarianza, no sólo la diagonal
+
+F_r <- estimacion^2 / var_est                # r = 1
+t_r <- estimacion / sqrt(var_est)
+
+c(estimacion    = estimacion,
+  ee            = sqrt(var_est),
+  t             = t_r,
+  t_al_cuadrado = t_r^2,
+  F             = F_r,
+  p             = pf(F_r, 1, n - k, lower.tail = FALSE))
+
+estimacion + c(-1, 1) * t_critico * sqrt(var_est)   # IC 95% de la diferencia
+```
+
+No se rechaza $H_0$. Pero cuidado: no rechazar no demuestra la igualdad.
+Lo que ayuda acá es el intervalo, [−1,43; 0,54]: angosto en relación con
+un efecto de 9 puntos, y centrado cerca de cero. Es un "no rechazo"
+**informativo** — si la equivalencia no es exactamente 25 puntos por
+año, anda muy cerca—. Distinto sería no rechazar con un intervalo
+enorme, que sólo indicaría falta de información.
+
+> **Qué dice y qué no dice un p-valor.** Es la probabilidad de observar
+> un estadístico al menos tan extremo como el que obtuvimos **si la
+> hipótesis nula fuera cierta**. No es la probabilidad de que $H_0$ sea
+> cierta, no mide la importancia del efecto, y no dice nada sobre
+> causalidad. Con muestras grandes, además, casi cualquier $H_0$ puntual
+> se rechaza: por eso reportamos siempre magnitudes e intervalos, no
+> sólo asteriscos.
+
+------------------------------------------------------------------------
+
+# Ejercicios
+
+## Ejercicio 1: estimar un modelo multivariado con matrices
+
+Agreguemos al modelo el sexo del postulante. Como es una variable
+categórica, la convertimos en una columna de ceros y unos —la Clase 10
+formaliza este truco; por ahora basta con saber que funciona:
+
+```{r ej1-setup}
+dd <- dd |> mutate(mujer = as.integer(sexo == 2))
+```
+
+Estima el modelo
+$$\text{pj4}_i = \beta_1 + \beta_2\,\text{edumama\_anios}_i +
+\beta_3\,\text{pj1}_i + \beta_4\,\text{mujer}_i + u_i$$
+
+a.  Arma $Y$ y $X$, y calcula $\hat\beta = (X'X)^{-1}X'Y$ a mano.
+    Verifica que coincide con `lm()`.
+b.  Calcula $\hat\sigma^2$ y los errores estándar a mano, y compáralos
+    con `summary()`.
+c.  Verifica que $X'\hat u = 0$ con una tolerancia razonable, y reporta
+    la matriz de correlaciones entre los tres regresores.
+d.  Contrasta $H_0: \beta_4 = 0$ (el coeficiente de `mujer`) calculando
+    a mano el estadístico $t$ y su p-valor, y construye el intervalo de
+    confianza al 95%. ¿La decisión del test coincide con el intervalo?
+
+
+
+## Ejercicio 2: la identidad de la variable omitida
+
+En §5.2 verificamos la fórmula del sesgo por simulación. Resulta que en
+realidad es una **identidad algebraica exacta**, que se cumple en
+cualquier base de datos sin necesidad de simular nada:
+
+$$\hat\beta^{\,\text{simple}} = \hat\beta^{\,\text{multi}} +
+\hat\beta^{\,\text{multi}}_{\text{omitida}} \times \hat\delta$$
+
+donde $\hat\delta$ es la pendiente de regresar la variable omitida
+contra la incluida.
+
+a.  Verifica la identidad en los datos reales para
+    `pj4 ~ edumama_anios`, tomando `pj1` como la variable omitida.
+b.  ¿En qué dos situaciones el sesgo es exactamente cero? Comprueba una
+    de ellas agregando al modelo una variable de puro ruido.
+
+
+
+## Ejercicio 3: relevante vs. irrelevante
+
+En §2 vimos que agregar el NEM mejoró la precisión del coeficiente de
+`edumama_anios`. Comparemos ese caso con el de una variable que no
+aporta nada.
+
+a.  Estima tres modelos sobre la misma muestra: sólo `edumama_anios`,
+    agregando `pj1`, y agregando la variable `ruido` del ejercicio
+    anterior.
+b.  Para cada uno reporta $\hat\sigma$, el error estándar de
+    `edumama_anios`, el $R^2$ y el $R^2$ ajustado.
+c.  Explica el patrón: ¿por qué la variable relevante **baja** el error
+    estándar, y la irrelevante lo sube (aunque sea poquito)?
+
+
+
+------------------------------------------------------------------------
+
+# Para la próxima ayudantía
+
+Con la Clase 8 cerramos el modelo lineal clásico: sabemos estimarlo,
+conocemos las propiedades de sus estimadores y podemos contrastar
+hipótesis sobre ellos. Lo que viene son extensiones y problemas.
+
+La Ayudantía 4 usa el mismo test $F$ que acabamos de ver, pero para una
+pregunta nueva: ¿son iguales los coeficientes entre dos grupos de la
+muestra? Ése es el **test de Chow** de cambio estructural (Clase 9), y
+con él llegan las **variables dicotómicas** de la Clase 10 —las mismas
+que usamos de contrabando en el Ejercicio 1.
