@@ -1,0 +1,727 @@
+---
+# ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+# Para modificarlo, editar el solucionario y volver a ejecutar
+# generar_version_estudiantes.R
+title: "Ayudantía 4:  Posibles problemas con el modelo: diagnóstico y soluciones"
+subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+author: "Alejandra Molina"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2
+)
+
+# digits = 6 para que los tests de hipótesis impriman el estadístico con
+# decimales; sin scipen, para que los p-valores salgan en notación científica
+# en vez de como una fila de ceros
+options(digits = 6)
+```
+
+> **Cátedras de referencia:** `Clase11-Heterocedasticidad.pdf`,
+> `Clase12-Autocorrelación.pdf`, `Clase13-Multicolinealidad.pdf` y
+> `Clase14-Error de Especificación.pdf`
+>
+> **Bases de datos:** `demre2018.rds`, `demre.rds`
+>
+> ------------------------------------------------------------------------
+
+# Preparación de los datos
+
+Hasta ahora estimamos, interpretamos y contrastamos hipótesis dando por
+cumplidos los supuestos del modelo clásico. Ahora vamos a **testear si
+se cumplen** y, cuando no, qué hacer.
+
+```{r paquetes}
+# install.packages(c("lmtest", "sandwich"))   # sólo la 1a vez
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(lmtest)     # bptest, dwtest, bgtest, resettest, coeftest
+library(sandwich)   # vcovHC (White), NeweyWest
+```
+
+Seguimos con el mismo modelo de la Ayudantía 3, y agregamos tres
+variables: la escolaridad del padre, el ranking (`pj2`) y el tramo de
+ingreso del hogar.
+
+```{r muestra}
+d18 <- readRDS("demre2018.rds") |>
+  filter(!is.na(pj4), !is.na(pj3), !is.na(pj1), !is.na(pj2),
+         !is.na(edumama_anios), !is.na(edupapa_anios), !is.na(ingreso))
+
+set.seed(210)
+dd <- slice_sample(d18, n = 5000, replace = FALSE)
+
+c(poblacion = nrow(d18), muestra = nrow(dd))
+```
+
+```{r modelo-base}
+m <- lm(pj4 ~ edumama_anios + pj1, data = dd)
+
+summary(m)$coefficients |> kable(digits = 4)
+```
+
+------------------------------------------------------------------------
+
+# Posibles problemas
+
+| Problema | Supuesto que viola | ¿Sesga $\hat\beta$? | ¿Invalida la inferencia? | Test | Solución |
+|:-----------|:-----------|:-----------|:-----------|:-----------|:-----------|
+| Heterocedasticidad | $\operatorname{var}(u_i) = \sigma^2$ | No | **Sí** | `bptest()` | `vcovHC()` |
+| Autocorrelación | $\operatorname{cov}(u_i, u_j) = 0$ | No | **Sí** | `dwtest()`, `bgtest()` | `vcovCL()`, `NeweyWest()` |
+| Multicolinealidad | ninguno | No | **Sí** | VIF | sacar variables |
+| Variables omitidas | $\operatorname{cov}(X, u) = 0$ | **Sí** | **Sí** | — | incluir variables |
+| Forma funcional | linealidad | **Sí** | **Sí** | `resettest()` | reespecificar |
+
+La heterocedasticidad y la autocorrelación **afectan la matriz de
+varianzas y covarianzas** y se arreglan cambiando cómo calculamos los
+errores estándar.
+
+La multicolinealidad, variables omitidas y problemas en la forma
+funcional **afectan directamente a los estimadores**, la única solución
+es cambiar el modelo. La multicolinealidad no viola ningún supuesto de
+MCO, es un problema de los datos.
+
+------------------------------------------------------------------------
+
+# Heterocedasticidad
+
+El supuesto es que todos los errores tienen la misma varianza:
+$E(uu') = \sigma^2 I$. Cuando no se cumple, la matriz de varianzas de
+los errores pasa a ser una diagonal con valores distintos:
+
+$$E(uu') = \sigma^2\Omega$$
+
+El diagnóstico informal se hace graficando los residuos vs los valores
+ajustados $$\hat{y}$$ y buscar un patrón en la **dispersión** (no en el
+promedio, que es cero por construcción).
+
+```{r het-grafico, fig.height=4}
+dd <- dd |> mutate(u = resid(m), ajustado = fitted(m))
+
+ggplot(dd, aes(ajustado, u)) +
+  geom_point(alpha = 0.12, colour = "#1E2761") +
+  geom_hline(yintercept = 0, colour = "red") +
+  labs(x = "Valor ajustado", y = "Residuo",
+       title = "Residuos contra ajustados") +
+  theme_minimal()
+```
+
+Para cuantificar a priori, podemos dividir la muestra, por ejemplo en
+deciles del valor ajustado, y calcular para cada grupo el valor ajustado
+promedio y la desviación estándar de los residuos promedio.
+
+```{r het-deciles}
+resumen <- dd |>
+  mutate(decil = ntile(ajustado, 10)) |>
+  group_by(decil) |>
+  summarise(n = n(), ajustado_medio = mean(ajustado), sd_residuos = sd(u))
+
+resumen |> kable(digits = 2)
+```
+
+Las dos columnas de la derecha permiten hacer un gráfico de
+$\hat\sigma_i$ contra $\hat Y_i$, con el ruido promediado dentro de cada
+decil.
+
+```{r het-deciles-grafico, fig.height=3.8}
+ggplot(resumen, aes(ajustado_medio, sd_residuos)) +
+  geom_line(colour = "#1E2761", alpha = 0.35) +
+  geom_point(size = 3, colour = "#1E2761") +
+  geom_text(aes(label = decil), vjust = -1.2, size = 3.2, colour = "#5B6577") +
+  labs(x = "Valor ajustado promedio del decil",
+       y = "Desviación estándar de los residuos",
+       title = "Dispersión de los residuos a lo largo de la recta") +
+  theme_minimal()
+```
+
+Ahora el patrón se ve más claramente. La dispersión sube de 64,0 puntos
+en el segundo decil a 77,9 en el noveno: un 22% más. Si el modelo fuera
+homocedástico, estos diez puntos deberían formar una línea horizontal.
+
+El último decil cae a 65,5 por el **efecto techo** de la variable
+dependiente. El puntaje se trunca en 850 puntos, y en ese decil un 6% de
+los postulantes ya está en 800 o más, así que no queda espacio para que
+el residuo sea positivo.
+
+## Cómo se testea
+
+**Test de Breusch-Pagan:** Regresión de los residuos al cuadrado contra
+las variables explicativas y contrasta que todos los coeficientes sean
+cero.
+
+```{r bp}
+bptest(m)
+```
+
+**Test de White:** igual que el anterior, pero incluye además los
+cuadrados y los productos cruzados de las variables explicativas.
+
+En R se usa la misma función para ambos test, en el de white se pasa
+como segundo argumento la fórmula de la regresión con las variables
+extra.
+
+```{r white}
+bptest(m, ~ edumama_anios * pj1 + I(edumama_anios^2) + I(pj1^2), data = dd)
+```
+
+**Ojo con el tamaño de muestra.** Con $n = 5.000$ estos tests detectan
+desviaciones muy pequeñas. Un p-valor de $10^{-15}$ no significa "el
+problema es gravísimo", significa "el problema existe". Para saber si
+importa hay que mirar cuánto cambian los errores estándar, que es lo que
+hacemos ahora.
+
+## Cómo se arregla
+
+Qué pasa cuando hay heterocedasticidad:
+
+$$E(\hat\beta) = \beta \qquad \text{sigue siendo insesgado}$$
+
+$$\operatorname{var}(\hat\beta) = \sigma^2 (X'X)^{-1} X'\Omega X (X'X)^{-1}
+\ \neq\ \sigma^2 (X'X)^{-1}$$
+
+El insesgamiento sólo necesita $E(u) = 0$ y $X$ fijas, así que se
+mantiene. Lo que cambia es la **fórmula de la varianza**: `summary()`
+está reportando errores estándar calculados con la fórmula equivocada, y
+con ellos todos los $t$, los p-valores y los intervalos.
+
+White (1980) demostró que se puede estimar la matriz de varianzas y
+covarianzas correcta sin saber qué forma tiene $\Omega$. En R eso se
+calcula con la función `vcovHC()`, y se la pasamos a `coeftest()` para
+rehacer la tabla de coeficientes, de t-valores y p-valores.
+
+```{r robustos}
+coeftest(m)                                  # errores estándar clásicos
+coeftest(m, vcov = vcovHC(m, type = "HC1"))  # errores estándar de White
+```
+
+El error estándar de `edumama_anios` sube de 0,392 a 0,417: un 6% más.
+En este caso, ninguna conclusión cambia, los dos coeficientes siguen
+siendo significativos, pero **no se sabía de antemano**.
+
+### Qué `type` usar en vcovHC
+
+El argumento `type` elige entre varias correcciones, todas convergen a
+lo mismo cuando $n$ crece, la diferencia importa con pocas
+observaciones.
+
+El apalancamiento ocurre cuando existen datos que se escapan en la
+distribución de una variable independiente. Hay apalancamiento severo
+cuando el apalancamiento de un dato superará el triple del
+apalancamiento promedio.
+
+```{r apalancamiento}
+apalancamiento <- hatvalues(m)
+
+max(apalancamiento)
+mean(apalancamiento)*3
+```
+
+| `type` | Cuándo usarlo |
+|:-----------------------------------|:-----------------------------------|
+| `"HC3"` | Por defecto de `vcovHC()`. La mejor opción con $n$ chico o mediano. Corrige apalancamiento no severo. |
+| `"HC1"` | Para replicar Stata (`, robust`). Sirve para $n$ grande y no corrige por apalancamiento. |
+| `"HC0"` | El algoritmo de White original. Sólo usar con $n$ muy grande. |
+| `"HC4"`, `"HC5"` | Si hay observaciones de apalancamiento extremo. |
+
+Acá usamos `HC3`, pero con $n = 5.000$ dan todas prácticamente el mismo
+número.
+
+```{r hc-comparacion}
+sapply(c("HC0", "HC1", "HC3", "HC4", "HC5"),
+       \(t) sqrt(diag(vcovHC(m, type = t)))) |> kable(digits = 5)
+```
+
+> **En la práctica, el estándar en la literatura es reportar errores
+> estándar robustos.**
+
+------------------------------------------------------------------------
+
+# Autocorrelación
+
+El supuesto es $\operatorname{cov}(u_i, u_j) = 0$: el error de una
+observación no está relacionado con el de otra. Es decir, se asume que
+las filas son observaciones independientes entre ellas. La
+autocorrelación es un problema que se encuentra en **series de tiempo o
+datos de panel**.
+
+Para esta sección usamos la base de datos completa con los 3 años.
+
+```{r base-completa}
+dtodos <- readRDS("demre_limpio.rds") |>
+  filter(!is.na(pj4), !is.na(pj1), !is.na(sexo)) |>
+  mutate(mujer = as.integer(sexo == 2)) |>
+  arrange(mrun, year)        # el orden importa: ver más abajo
+
+dtodos |> count(year) |> kable()
+```
+
+En nuestra base de datos que tiene 2016, 2017 y 2018 hay 7.460 personas
+que rindieron la prueba en dos años distintos y 78 en los tres. Para
+cada una de ellas hay dos o tres filas en la base, y el error de esas
+filas contiene lo mismo: su habilidad, su colegio, su motivación, todos
+los inobservables del modelo, casi nada de eso cambia de un año a otro.
+
+```{r repetidores}
+dtodos |>
+  distinct(mrun, year) |>
+  count(mrun) |>
+  count(n, name = "personas") |>
+  rename(anios_en_que_rindio = n) |>
+  kable()
+```
+
+Entonces, por construcción:
+
+$$\operatorname{cov}(u_i, u_j) \neq 0 \quad \text{si } i \text{ y } j
+\text{ son la misma persona}$$
+
+Calculemos el modelo incluyendo a personas repetidas en la base de
+datos.
+
+```{r modelo-pool}
+m_pool <- lm(pj4 ~ pj1 + mujer + factor(year), data = dtodos)
+
+summary(m_pool)$coefficients |> kable(digits = 4)
+```
+
+Ahora emparejamos cada residuo de un repitente con el suyo del año
+anterior:
+
+```{r correlacion-residuos}
+pares <- dtodos |>
+  mutate(u = resid(m_pool)) |>
+  group_by(mrun) |>
+  filter(n() > 1) |>
+  mutate(u_anterior = lag(u)) |>
+  ungroup() |>
+  filter(!is.na(u_anterior))
+
+set.seed(1)
+data.frame(
+  pares                  = nrow(pares),
+  cor_misma_persona      = cor(pares$u, pares$u_anterior),
+  cor_personas_distintas = cor(sample(resid(m_pool), nrow(pares)),
+                               sample(resid(m_pool), nrow(pares)))
+) |> kable(digits = 4, row.names = FALSE)
+```
+
+El residuo de una persona predice en promedio el 78% de su propio
+residuo del año siguiente. Entre personas distintas la correlación es
+0,01.
+
+## Cómo se testea
+
+Usamos los teste de Durbin-Watson y Breusch-Godfrey. Para eso primero
+hay que ordenar las observaciones por persona y año, para que las
+observaciones correlacionadas quedan contiguas.
+
+```{r dw-ordenado}
+dwtest(m_pool)
+bgtest(m_pool, order = 1)
+```
+
+$DW = 1{,}92$ y Breusch-Godfrey $= 394{,}2$, los dos con p-valor bajo
+$2\times10^{-16}$.
+
+Veamos que pasa si ponemos las observaciones en cualquier orden, de modo
+que las dos observaciones de una misma persona no queden contiguas:
+
+```{r dw-aleatorio}
+set.seed(7)
+d_azar <- dtodos |> slice_sample(prop = 1)
+m_azar <- lm(pj4 ~ pj1 + mujer + factor(year), data = d_azar)
+
+dwtest(m_azar)
+bgtest(m_azar, order = 1)
+```
+
+$DW = 2{,}00$ con $p = 0{,}72$, los test ya no detectan la
+autocorrelación.
+
+> Estos tests sólo detectan dependencia entre observaciones
+> **contiguas**. Primero hay que determinar cual es la variable que
+> relaciona a las observaciones (el tiempo, la persona, el colegio, la
+> comuna) y luego hay que ordenar por esa variable antes de hacer los
+> test.
+
+## Cómo se arregla
+
+Como en la heterocedasticidad, el estimador sigue siendo insesgado y lo
+que está mal calculado es la varianza. La corrección se llama
+**clustered standard errors**. La función para calcular la matriz de
+varianzas y covarianzas necesita como parámetro la variable que agrupa a
+las filas correlacionadas, en nuestro caso, el mrun de una misma
+persona.
+
+```{r cluster}
+V_cl <- vcovCL(m_pool, cluster = dtodos$mrun)
+
+data.frame(
+  clasico = sqrt(diag(vcov(m_pool))),
+  cluster = sqrt(diag(V_cl)),
+  razon   = sqrt(diag(V_cl)) / sqrt(diag(vcov(m_pool)))
+) |> kable(digits = 5)
+```
+
+La corrección es chica si se usa toda la base de datos, porque solo
+están repetidas el 6% de las personas.
+
+Si nos quedamos sólo con ellos, donde el problema está concentrado, se
+ve el efecto:
+
+```{r cluster-repetidores}
+d_rep <- dtodos |> group_by(mrun) |> filter(n() > 1) |> ungroup()
+m_rep <- lm(pj4 ~ pj1 + mujer + factor(year), data = d_rep)
+
+data.frame(
+  clasico = sqrt(diag(vcov(m_rep))),
+  cluster = sqrt(diag(vcovCL(m_rep, cluster = d_rep$mrun))),
+  razon   = sqrt(diag(vcovCL(m_rep, cluster = d_rep$mrun))) /
+            sqrt(diag(vcov(m_rep)))
+) |> kable(digits = 5)
+```
+
+Un 33% más en los errores estándar. Tratar las 15.154 filas como si
+fueran 15.154 personas independientes exagera la información disponible,
+porque en realidad son 7.538 personas. Si las dos observaciones de cada
+una fueran idénticas, el error estándar debería subir en
+$\sqrt{15.154/7.538} = 1{,}42$; como la correlación es 0,78 y no 1, sube
+1,33.
+
+> **Cada vez que tus datos tienen estructura de grupos: varios años por
+> persona, varios estudiantes por colegio, varios municipios por región,
+> es mejor hacer el cálculo de los clustered estandard errors para hacer
+> las inferencias.**
+
+## Si los datos fueran una serie de tiempo
+
+Con datos temporales la corrección que se hace es **Newey-West**,
+corrige la matriz de varianzas y covarianzas simultaneamente para
+heterocedasticidad *y* autocorrelación.
+
+```{r newey, eval=FALSE}
+coeftest(m, vcov = NeweyWest(m, lag = 4, prewhite = FALSE))
+```
+
+En nuestro caso no tiene sentido porque con 3 períodos no hay realmente
+una estructura temporal.
+
+------------------------------------------------------------------------
+
+# Multicolinealidad
+
+En la base del DEMRE hay dos variables que miden casi lo mismo: `pj1` es
+el puntaje NEM y `pj2` el puntaje ranking de notas. Los dos se calculan
+a partir del promedio de notas de enseñanza media.
+
+```{r cor-nem-ranking}
+cor(dd$pj1, dd$pj2)
+```
+
+0,971. Un investigador descuidado las metería las dos al modelo "para
+controlar mejor por el desempeño escolar". Para ver qué pasa, estimamos
+tres modelos: con cada variable por separado y con las dos juntas.
+
+```{r modelo-colineal}
+m1 <- lm(pj4 ~ edumama_anios + pj1,       data = dd)   # sólo NEM
+m2 <- lm(pj4 ~ edumama_anios + pj2,       data = dd)   # sólo ranking
+m3 <- lm(pj4 ~ edumama_anios + pj1 + pj2, data = dd)   # las dos
+
+summary(m1)
+summary(m2)
+summary(m3)
+```
+
+**Por separado, las dos variables tienen un efecto positivo y
+significativo en el modelo.** El NEM tiene coeficiente 0,372 y el
+ranking 0,257.
+
+**Cuando se ponen ambas, cambia completamente.** El coeficiente del NEM
+se triplica, a 1,14, y el del ranking **cambia de signo**, a −0,64. El
+modelo ahora estaría diciendo que a igual NEM, más ranking implica
+*menos* puntaje de Matemática. Y los dos errores estándar se
+cuadriplican (0,011 → 0,045 y 0,009 → 0,036).
+
+Si bien $\hat\sigma$ baja y el $R^2$ sube al incluir las dos variables,
+es decir, el modelo **predice** mejor, el problema es que los
+coeficientes individuales dejaron de ser interpretables.
+
+## Como se testea
+
+El indicador estándar es el **factor de inflación de la varianza**. Para
+cada variable independiente se corre una regresión contra todas las
+demás variables independientes y se calcula:
+
+$$VIF_j = \frac{1}{1 - R^2_j}$$
+
+Ese factor da cuenta de la inflación de la varianza del coeficiente
+"problemático" respecto del caso sin colinealidad.
+
+```{r vif}
+# `car::vif()` hace esto mismo; lo escribimos para ver de dónde sale
+vif <- function(modelo) {
+  X <- model.matrix(modelo)[, -1, drop = FALSE]      # saco el intercepto
+  sapply(colnames(X), function(j) {
+    otras <- setdiff(colnames(X), j)
+    1 / (1 - summary(lm(X[, j] ~ X[, otras, drop = FALSE]))$r.squared)
+  })
+}
+
+fila <- function(mod) {                     # ordena siempre igual, con NA si falta
+  v <- vif(mod)
+  c(edumama_anios = v[["edumama_anios"]],
+    pj1 = if ("pj1" %in% names(v)) v[["pj1"]] else NA,
+    pj2 = if ("pj2" %in% names(v)) v[["pj2"]] else NA)
+}
+
+rbind(`modelo sólo NEM`       = fila(m1),
+      `modelo sólo ranking`   = fila(m2),
+      `modelo las dos juntas` = fila(m3)) |> kable(digits = 2)
+```
+
+El VIF del NEM pasa de 1,01 a 18,98, eso quiere decir que su varianza
+está inflada diecinueve veces, o sea su error estándar está inflado más
+de cuatro veces ($\sqrt{19{,}0} = 4{,}4$) . Hay que preocuparse cuando
+el VIF sea más de 10.
+
+## Cómo se arregla
+
+Hay varias opciones
+
+1.  **Eliminar una de las variables redundantes**.
+2.  **Combinarlas** en un índice (el promedio, por ejemplo).
+3.  **Aumentar la muestra**: la colinealidad infla la varianza, y más
+    datos la desinflan. Hacer esto solo si la correlación no es tan
+    alta.
+4.  **No hacer nada**, si tu interés es predecir la variable dependiente
+    o si los coeficientes afectados no son los que te importan. La
+    colinealidad no afecta a los otros parámetros y puede mejorar el
+    $R^2$. PEROOOO **lo que no hay que hacer** es interpretar los
+    coeficientes individuales de las variables casi colineales.
+
+------------------------------------------------------------------------
+
+# Error de especificación
+
+Acá pueden existir tres casos: faltan variables, sobran variables, las
+mismas variables tienen otra forma.
+
+## Variable omitida
+
+Si el modelo verdadero tiene una variable extra $X_3$ y se hace la
+estimación sin ella:
+
+$$E(\hat\beta_2^{*}) = \beta_2 + \beta_3\,\frac{\sum x_{2i}x_{3i}}{\sum x_{2i}^2}
+= \beta_2 + \beta_3\,\delta$$
+
+El sesgo es el producto de dos cosas, así que desaparece si
+**cualquiera** de las dos es cero: que la variable omitida no afecte a
+$Y$, es decir, $\beta_3 = 0$ o que no esté correlacionada con la
+variable incluída $cov(x_2,x_3)=0$ . No hay test para esto. Es un
+problema de diseño de investigación.
+
+## Variable irrelevante
+
+Agregar una variable que no corresponde **no sesga**, pero cuesta
+eficiencia y grados de libertad.
+
+```{r irrelevante}
+set.seed(2026)
+dd <- dd |> mutate(ruido = rnorm(n()))
+
+m_ruido <- lm(pj4 ~ edumama_anios + pj1 + ruido, data = dd)
+
+data.frame(
+  modelo     = c("sin ruido", "con ruido"),
+  b_edumama  = c(coef(m)[["edumama_anios"]], coef(m_ruido)[["edumama_anios"]]),
+  ee_edumama = c(summary(m)$coefficients["edumama_anios", 2],
+                 summary(m_ruido)$coefficients["edumama_anios", 2]),
+  R2         = c(summary(m)$r.squared, summary(m_ruido)$r.squared),
+  R2_ajust   = c(summary(m)$adj.r.squared, summary(m_ruido)$adj.r.squared)
+) |> kable(digits = 6)
+```
+
+El coeficiente se mueve en el tercer decimal y el $R^2$ ajustado baja un
+poquitín.
+
+> **Conclusión**
+>
+> Omitir una variable relevante puede generar un sesgo en algún
+> parámetro, incluir una variable irrelevante deja el parámetro con el
+> valor correcto, aunque puede bajar un poco la precisión. Ante la duda,
+> probar modelos con y sin las variables "cuestionables" y luego
+> decidir.
+
+## Diferente forma funcional con las mismas variables: el test RESET
+
+El test **RESET de Ramsey** detecta si hay variables independientes que
+tienen una relación no-lineal con la variable dependiente, por eso el
+test incluye potencias del valor ajustado como regresores adicionales.
+La idea es que $\hat Y^2$ y $\hat Y^3$ son combinaciones de cuadrados y
+productos cruzados de las $X$, por lo que si resultan significativos, es
+que al modelo le falta curvatura. La hipótesis nula es que el modelo con
+las potencias es igual al modelo si ellas.
+
+```{r reset}
+resettest(m, power = 2:3, type = "fitted")
+```
+
+$F = 104$ con p-valor menor a $2 \times 10^{-16}$: la especificación
+lineal se rechaza.
+
+Probemos agregando los cuadrados al modelo:
+
+```{r cuadraticos}
+m_cuad <- lm(pj4 ~ edumama_anios + I(edumama_anios^2) + pj1 + I(pj1^2), data = dd)
+
+summary(m_cuad)$coefficients |> kable(digits = 5)
+
+```
+
+Los dos términos cuadráticos son significativos y tienen signo positivo
+y se pierde la linealidad de la escolaridad de la madre, el efecto de
+esta variables es principalmente no lineal.
+
+# Comparar modelos: $\bar R^2$, AIC y BIC
+
+Cuando hay varias especificaciones razonables hay que comparar los
+modelos bajo distintos criterios. No existe una respuesta universal para
+decidir, va a depender del tipo de análisis que queremos hacer.
+
+```{r comparacion}
+modelos <- list(
+  base          = m,
+  cuadraticos   = m_cuad,
+  controles     = lm(pj4 ~ edumama_anios + pj1 + edupapa_anios + factor(ingreso), data = dd),
+  ambos         = lm(pj4 ~ edumama_anios + I(edumama_anios^2) + pj1 + I(pj1^2) +
+                       edupapa_anios + factor(ingreso), data = dd)
+)
+
+data.frame(
+  modelo  = names(modelos),
+  k       = sapply(modelos, \(x) length(coef(x))),
+  sigma   = sapply(modelos, \(x) summary(x)$sigma),
+  R2_ajust= sapply(modelos, \(x) summary(x)$adj.r.squared),
+  AIC     = sapply(modelos, AIC),
+  BIC     = sapply(modelos, BIC),
+  RESET_p = sapply(modelos, \(x) format.pval(resettest(x, 2:3, "fitted")$p.value, 2)),
+  BP_p    = sapply(modelos, \(x) format.pval(bptest(x)$p.value, 2))
+) |> kable(digits = c(0, 0, 2, 4, 0, 0, 0, 0), row.names = FALSE)
+```
+
+En nuestro ejemplo el modelo completo es mejor en los tres criterios a
+la vez, lo que no siempre pasa. Sin embargo, si lo que nos interesa es
+estimar el efecto de una de esas variables, entonces ese modelo no nos
+sirve.
+
+# Conclusión
+
+Cuando se analizan los posibles problemas hay que tener en cuenta que:
+
+- La autocorrelación o la heterocedasticidad pueden deberse a una mala
+  forma funcional.
+- La **variable omitida** es la causa más común de ambas cosas: si falta
+  un regresor, su efecto queda en el residuo y afecta su estructura.
+- La **multicolinealidad** aparece cuando uno trata de arreglar lo
+  anterior metiendo todas las variables disponibles.
+
+El orden práctico es:
+
+1.  Asegurarse de la correcta especificación del modelo (RESET, teoría).
+
+2.  Calcular los errores estándar robustos.
+
+Al revés no sirve: errores estándar robustos de coeficientes sesgados
+lleva a conclusiones incorrectas.
+
+------------------------------------------------------------------------
+
+# Resumen de funciones en R
+
+| Qué quiero | Función | Paquete |
+|:-----------------------|:-----------------------|:-----------------------|
+| Breusch-Pagan | `bptest(m)` | `lmtest` |
+| White | `bptest(m, ~ x1*x2 + I(x1^2) + I(x2^2), data = d)` | `lmtest` |
+| Durbin-Watson | `dwtest(m)` | `lmtest` |
+| Breusch-Godfrey | `bgtest(m, order = p)` | `lmtest` |
+| RESET | `resettest(m, power = 2:3, type = "fitted")` | `lmtest` |
+| Tabla de coeficientes corregidos | `coeftest(m, vcov = ...)` | `lmtest` |
+| Errores estándar de White | `vcovHC(m, type = "HC1")` | `sandwich` |
+| Errores estándar agrupados | `vcovCL(m, cluster = d$id)` | `sandwich` |
+| Errores estándar HAC | `NeweyWest(m, lag = p)` | `sandwich` |
+| VIF | `car::vif(m)` | `car` |
+
+------------------------------------------------------------------------
+
+# Ejercicios
+
+## Ejercicio 1
+
+Considera el modelo
+
+$$\text{pj3}_i = \beta_1 + \beta_2\,\text{edumama\_anios}_i +
+\beta_3\,\text{pj1}_i + u_i$$
+
+donde `pj3` es el puntaje de Lenguaje.
+
+a.  Estima el modelo y arma una tabla por decil del valor ajustado
+    $\hat{y}$, el ajustado promedio y la desviación estándar de los
+    residuos. Grafícala. ¿A simple vista parece que hay
+    heterocedasticidad?
+b.  Aplica el test de Breusch-Pagan y el de White. ¿Se rechaza o acepta
+    la homocedasticidad?
+c.  Compara los errores estándar normales con los de White. ¿Cambia
+    alguna conclusión sobre los estimadores?
+
+## Ejercicio 2
+
+La escolaridad del padre y la de la madre están correlacionadas, pero no
+tanto como el NEM y el ranking. ¿conviene usar las dos?
+
+a.  Estima `pj4 ~ edumama_anios + pj1` y
+    `pj4 ~ edumama_anios + edupapa_anios + pj1`. ¿cómo cambian el
+    coeficiente y el error estándar de `edumama_anios`?
+b.  Calcula los VIF ¿Hay un problema de multicolinealidad?
+c.  Contrasta $H_0: \beta_{\text{edumama}} = \beta_{\text{edupapa}} = 0$
+    con un test $F$ conjunto. Compara esa conclusión con los $t$
+    individuales.
+d.  Construye un índice `edupadres`, el promedio de las dos
+    escolaridades, y estima el modelo con esa única variable. Compara
+    $\hat\sigma$, $\bar R^2$ y AIC con los de (a). ¿Qué especificación
+    elegirías?
+
+## Ejercicio 3
+
+La variable `ingreso` viene en diez tramos ordenados. Úsala en el modelo
+como número, suponiendo que pasar del tramo 1 al 2 es equivalente a
+pasar del 9 al 10 y haz otra columna con la variable como factor
+(considerando que los tramos son categorías).
+
+a.  Estima `pj4 ~ edumama_anios + pj1 + ingreso` (tramo como número) y
+    `pj4 ~ edumama_anios + pj1 + factor(ingreso)` (una dummy por tramo).
+b.  Aplica el RESET a los dos. ¿Alguno pasa el test?
+c.  Contrasta un modelo contra el otro con un test $F$. ¿Qué dicen el
+    AIC y el BIC?
+d.  ¿Qué especificación del modelo se te ocurre que puede ser mejor que
+    estos? constrúyelo y contrástalo con los anteriores.
