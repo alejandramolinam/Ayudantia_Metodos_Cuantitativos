@@ -1,0 +1,856 @@
+---
+# ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+# Para modificarlo, editar el solucionario y volver a ejecutar
+# generar_version_estudiantes.R
+title: "Ayudantía 5: Variable dependiente limitada: logit, probit, multinomial y tobit"
+subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+author: "Alejandra Molina"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2
+)
+
+options(digits = 6)
+```
+
+> **Base de datos:** `demre2018.rds`
+>
+> ------------------------------------------------------------------------
+
+# Preparación de los datos
+
+Hasta ahora la variable dependiente era una variable continua y sin
+límites en la práctica. En esta ayudantía veremos tres casos en que eso
+no se cumple y MCO deja de ser la mejor herramienta.
+
+| Variable dependiente | Ejemplo | Modelo |
+|:-----------------------|:-----------------------|:-----------------------|
+| **Binaria**: 0 o 1 | Estudiar en un colegio particular pagado | Logit, probit |
+| **Categórica:** más de dos categorías, sin orden | Tipo de colegio: municipal, subvencionado o pagado | Logit multinomial |
+| **Censurada**: tiene un tope (piso y/o techo) | El puntaje ranking no puede pasar de 850 | Tobit |
+| **Truncada**: faltan las unidades fuera de un umbral | Una base con sólo quienes sacaron menos de 650 | Regresión truncada |
+
+```{r paquetes}
+# install.packages(c("AER", "marginaleffects", "truncreg"))   # sólo la 1a vez
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(lmtest)           # bptest, lrtest
+library(marginaleffects)  # avg_slopes, slopes, predictions
+library(nnet)             # multinom, para el logit multinomial (viene con R)
+library(AER)              # tobit
+library(truncreg)         # truncreg, regresión truncada
+```
+
+Usamos la misma muestra de las ayudantías anteriores y creamos tres
+variables dicotómicas.
+
+```{r muestra}
+d18 <- readRDS("demre2018.rds") |>
+  filter(!is.na(pj4), !is.na(pj3), !is.na(pj1), !is.na(pj2),
+         !is.na(edumama_anios), !is.na(edupapa_anios), !is.na(ingreso),!is.na(region))
+
+set.seed(210)
+dd <- slice_sample(d18, n = 5000, replace = FALSE) |>
+  mutate(pagado = as.integer(TipoColegio == 3),   # colegio particular pagado
+         mujer  = as.integer(sexo == 2),
+         rm     = as.integer(region == 13))       # Región Metropolitana
+
+c(muestra = nrow(dd), porc_pagado = 100*mean(dd$pagado))
+```
+
+Un 21% de la muestra estudió en un colegio particular pagado.
+
+------------------------------------------------------------------------
+
+# Modelo de probabilidad lineal
+
+Cuando $Y$ es 0 o 1, su esperanza es una probabilidad:
+
+$$E(Y_i \mid X_i) = P(Y_i = 1 \mid X_i) = \beta_1 + \beta_2 X_{2i} + \dots$$
+
+Si usamos MCO hacemos un modelo de probabilidad lineal (MPL).
+
+La pregunta que vamos a modelar es **qué tanto afectan a la probabilidad
+de estudiar en un colegio pagado: la escolaridad de la madre, el tramo
+de ingreso del hogar y vivir en la región metropolitana**.
+
+```{r mpl}
+m_mpl <- lm(pagado ~ edumama_anios + ingreso + rm, data = dd)
+
+summary(m_mpl)
+```
+
+Los coeficientes se leen como **puntos porcentuales**:
+
+- un año más de escolaridad de la madre aumenta en 3,3 puntos
+  porcentuales la probabilidad de estar en un colegio pagado
+
+- un tramo más de ingreso aumenta en 5,8 puntos porcentuales la
+  probabilidad de estar en un colegio pagado
+
+- vivir en la RM aumenta en 8,6 puntos porcentuales la probabilidad de
+  estar en un colegio pagado
+
+El modelo lineal es fácil de interpretar, pero tiene dos problemas.
+
+**1. Predice probabilidades imposibles: negativas o mayores de 1**
+
+```{r mpl-fuera}
+dd <- dd |> mutate(p_mpl = fitted(m_mpl))
+
+c(menores_a_0 = sum(dd$p_mpl < 0), mayores_a_1 = sum(dd$p_mpl > 1),
+  minimo = min(dd$p_mpl), maximo = max(dd$p_mpl))
+```
+
+```{r mpl-grafico, fig.height=3.6}
+ggplot(dd, aes(p_mpl)) +
+  geom_histogram(bins = 40, fill = "#1E2761", alpha = 0.8) +
+  geom_vline(xintercept = c(0, 1), colour = "red") +
+  labs(x = "Probabilidad predicha por el MPL", y = "Estudiantes",
+       title = "El MPL predice probabilidades negativas") +
+  theme_minimal()
+```
+
+1.023 estudiantes, uno de cada cinco, tienen una probabilidad predicha
+**negativa**.
+
+**2. Es heterocedástico por construcción.**
+
+Si $Y$ es binaria, $\operatorname{var}(u_i) = p_i(1 - p_i)$: la varianza
+depende de $X$.
+
+```{r mpl-bp}
+bptest(m_mpl)
+```
+
+Aunque este problema se podría arreglar con los errores estándar
+robustos.
+
+------------------------------------------------------------------------
+
+# Logit y probit
+
+En vez de ajustar una recta, usamos una función $G$ que transforma
+cualquier número real en un valor entre 0 y 1:
+
+$$P(Y_i = 1 \mid X_i) = G(\beta_1 + \beta_2 X_{2i} + \dots) = G(X_i\beta)$$
+
+La forma de $G$ depende de qué distribución suponemos para $u$:
+
+| Modelo     | Distribución de $u$ | $G(z)$ en R | Densidad $g(z)$ en R |
+|:-----------|:--------------------|:------------|:---------------------|
+| **Logit**  | Logística           | `plogis(z)` | `dlogis(z)`          |
+| **Probit** | Normal estándar     | `pnorm(z)`  | `dnorm(z)`           |
+
+```{r curvas, fig.height=3.6}
+z <- seq(-5, 5, length.out = 400)
+curvas <- rbind(data.frame(z, p = plogis(z), modelo = "Logit"),
+                data.frame(z, p = pnorm(z),  modelo = "Probit"))
+
+ggplot(curvas, aes(z, p, colour = modelo)) +
+  geom_line(linewidth = 1) +
+  scale_colour_manual(values = c(Logit = "#1E2761", Probit = "#C8553D")) +
+  labs(x = expression(X*beta), y = "P(Y = 1)", colour = NULL,
+       title = "Las dos funciones G()") +
+  theme_minimal()
+```
+
+Las dos curvas son casi iguales. La logística tiene colas más gruesas
+(su desviación estándar es 1.8 y la normal es 1).
+
+Estos modelos se estiman por **máxima verosimilitud**: se buscan los
+$\beta$ que hacen más probable haber observado los 0 y 1 de los datos.
+En R se usa `glm()` con el parámetro `family=binomial`.
+
+## Estimación
+
+```{r logit-probit}
+m_logit  <- glm(pagado ~ edumama_anios + ingreso + rm,
+                family = binomial(link = "logit"),  data = dd)
+m_probit <- glm(pagado ~ edumama_anios + ingreso + rm,
+                family = binomial(link = "probit"), data = dd)
+
+summary(m_logit)
+summary(m_probit)
+```
+
+La salida se parece a la de `lm()`, pero en vez de $t$ aparece $z$ (los
+tests son asintóticos) y en vez de $R^2$ aparece la *deviance*.
+
+## Interpretación de los coeficientes
+
+Los $\beta$ de un logit o un probit **no son efectos sobre la
+probabilidad**. Lo que se puede leer directo es:
+
+- **El signo**: los tres son positivos, así que las tres variables
+  aumentan la probabilidad de estar en un colegio particular pagado.
+- **La significancia**: los tres $z$ son significativos.
+
+### Caso del Logit
+
+$$ P(Y_i=1|X_i)= \frac{\exp(X_i'\beta)} {1+\exp(X_i'\beta)} $$
+
+Despejando la forma funcional del logit, el modelo es lineal en el
+logaritmo de los *odds* (la razón de probabilidades).
+
+En nuestro ejemplo $p$ es la probabilidad de ir a un colegio particular
+y $1-p$ la probabilidad de ir a otro tipo de colegio.
+
+$$\ln\left(\frac{p}{1-p}\right) = X\beta$$
+
+$$odd= \left(\frac{p}{1-p}\right) = e^{X\beta}$$
+
+El valor $e^{\beta_j}$ es el *odd ratio* que corresponde al factor por
+el que se multiplican los *odds* cuando $X_j$ sube en una unidad.
+
+```{r odds}
+exp(coef(m_logit)) |> kable(digits = 2, col.names = "odds ratio")
+```
+
+Veamos como se interpreta esto con los datos:
+
+```{r odds-ejemplo}
+# Supongamos una persona promedio que no es de la RM
+dd_mean <- data.frame(
+  edumama_anios = mean(dd$edumama_anios, na.rm = TRUE),
+  ingreso = mean(dd$ingreso,na.rm = TRUE),
+  rm = 0
+)
+
+# Probabilidad modelada de ir a un colegio particular con madre con 13 años de escolaridad y tramo de ingreso 5.
+p0 <- predict(m_logit, newdata = dd_mean,
+              type = "response")
+
+# Calculemos las probabilidades para 0 a 4 años adicionales
+resultados <- data.frame(Anios_adicionales = 0:4) |>
+  mutate(
+    Odds_ratio = exp(coef(m_logit)["edumama_anios"])^Anios_adicionales,
+    Probabilidad = sapply(Anios_adicionales, function(x) {
+      nd <- dd_mean
+      nd$edumama_anios <- nd$edumama_anios + x
+      predict(m_logit, newdata = nd, type = "response")}),
+    Odds = Probabilidad / (1 - Probabilidad),
+    Cambio_pp = (Probabilidad - p0) * 100,
+    Probabilidad = Probabilidad*100
+  )
+
+# Presentar tabla
+resultados |>
+  kable(
+    col.names = c(
+      "Años adicionales",
+      "Odds ratio",
+      "Probabilidad (%)",
+      "Odds",
+      "Cambio (pp)"
+    ),
+    caption = "Efecto de la escolaridad materna en la asistencia a colegios particulares",
+    align = "c",
+    digits = 3
+  ) 
+```
+
+| Ojo: No se puede hacer este análisis con probit.
+
+**Logit vs probit.** Los coeficientes del logit son más grandes, porque
+la escala de la logística es más ancha. La razón entre los coeficientes
+de ambos modelos es casi constante:
+
+```{r razon}
+coef(m_logit) / coef(m_probit)
+```
+
+Para saber las diferencias hay que comparar los efectos marginales, no
+los coeficientes.
+
+------------------------------------------------------------------------
+
+# Efectos marginales
+
+Lo que nos interesa es saber cuánto cambia la probabilidad de asistir a
+un colegior particular cuando cambia cada una de las variables
+independientes:
+
+$$\frac{\partial P(Y=1 \mid X)}{\partial X_j} = g(X\beta)\,\beta_j$$
+
+El efecto marginal es el coeficiente multiplicado por la función de
+densidad evaluada en $X\beta$. Como la densidad cambia con $X$, **el
+efecto es distinto para cada persona**: es grande en el centro de la
+distribución (donde $p \approx 0{,}5$) y casi cero en las colas. Hay que
+elegir dónde evaluarlo.
+
+## Efecto en el promedio (PEA)
+
+Se evalúa en una **persona "promedio"**, con todas las $X$ en su media.
+
+```{r pea}
+x_prom <- c(1, mean(dd$edumama_anios), mean(dd$ingreso), mean(dd$rm))
+
+z_logit <- sum(coef(m_logit) * x_prom)     # X*beta de la persona promedio
+
+c(dlogis(z_logit) * coef(m_logit)[c("edumama_anios", "ingreso","rm")])
+```
+
+## Efecto promedio (APE)
+
+Se calcula el efecto para **cada** estudiante y después se promedia. Es
+lo que se reporta habitualmente en la literatura. Se usa `avg_slopes()`
+del paquete `marginaleffects`, que además entrega errores estándar, $z$
+e intervalos de confianza:
+
+```{r ape}
+avg_slopes(m_logit)
+avg_slopes(m_probit)
+```
+
+## Comparación MCO, Logit y Probit
+
+```{r comparacion-efectos}
+data.frame(
+  variable = c("edumama_anios", "ingreso", "rm"),
+  MPL      = coef(m_mpl)[-1],
+  logit    = avg_slopes(m_logit)$estimate,
+  probit   = avg_slopes(m_probit)$estimate
+) |> kable(digits = 4, row.names = FALSE)
+```
+
+En promedio, los tres modelos dan efectos parecidos: un año más de
+escolaridad de la madre son aproximadamente 3,4 puntos porcentuales más
+de probabilidad.
+
+El PEA es más chico que el APE (3,0 contra 3,3 puntos para la
+escolaridad de la madre): la persona "promedio" tiene una probabilidad
+de 9%, en la parte plana de la S, y no representa bien a los estudiantes
+de ingresos altos, donde el efecto es mucho mayor.
+
+Si predecimos para dos personas que difieren solo en escolaridad de la
+madre, vemos que a mayor ingreso más diferentes son sus probabilidades.
+
+```{r prob-ingreso, fig.height=3.8}
+grilla <- predictions(m_logit,
+                      newdata = datagrid(ingreso = 1:10, edumama_anios = c(12, 16), rm = 1))
+
+ggplot(grilla, aes(ingreso, estimate, colour = factor(edumama_anios))) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  scale_x_continuous(breaks = 1:10) +
+  scale_colour_manual(values = c("12" = "#1E2761", "16" = "#C8553D")) +
+  labs(x = "Tramo de ingreso", y = "P(colegio pagado)",
+       colour = "Años de escolaridad\nde la madre",
+       title = "Probabilidad predicha por el logit (estudiantes de la RM)") +
+  theme_minimal()
+```
+
+Para un estudiante de la RM cuya madre tiene 12 años de escolaridad,
+pasar del tramo 1 al 2 sube la probabilidad en menos de un punto
+porcentual, pero pasar del 9 al 10, aumente en 10 puntos porcentuales.
+Un MPL le asignaría el mismo efecto a los dos saltos.
+
+------------------------------------------------------------------------
+
+# Bondad de ajuste y tests
+
+## Pseudo $R^2$
+
+No hay $R^2$ porque no hay suma de residuos al cuadrado. El más usado es
+el de **McFadden**, que compara la log-verosimilitud del modelo con la
+de un modelo sólo con constante:
+
+$$R^2_{McF} = 1 - \frac{\ln L_{\text{modelo}}}{\ln L_{\text{sólo constante}}}$$
+
+```{r pseudo-r2}
+m_cero <- glm(pagado ~ 1, family = binomial, data = dd)
+
+1 - as.numeric(logLik(m_logit) / logLik(m_cero))
+```
+
+0,37. No se interpreta como "porcentaje de la varianza explicada", pero
+sirve para comparar modelos de la misma variable dependiente.
+
+## Porcentaje de aciertos
+
+Se predice $\hat Y = 1$ si $\hat p > 0{,}5$ y se compara con lo
+observado.
+
+```{r aciertos}
+dd <- dd |> mutate(p_logit = fitted(m_logit),
+                   pred    = as.integer(p_logit > 0.5))
+
+table(observado = dd$pagado, predicho = dd$pred)
+
+mean(dd$pred == dd$pagado)
+```
+
+El modelo predice bien un 87% del tiempo, pero dado que en la muestra un
+80% de las personas no va a un colegio pagado, un modelo que siempre
+predice 0 acierta en el 80% de los casos, que no es tan diferente. Con
+variables dependientes desbalanceadas, el porcentaje de aciertos puede
+ser engañoso.
+
+## Test de razón de verosimilitud
+
+Es el equivalente del test $F$ para modelos estimados por máxima
+verosimilitud. Para ver si un grupo de variables es significativo:
+
+$$LR = 2(\ln L_{\text{completo}} - \ln L_{\text{restringido}}) \sim \chi^2_q$$
+
+donde $q$ es el número de variables excluidas. Por ejemplo, ¿aporta algo
+el ingreso además de la escolaridad de la madre y la región?
+
+```{r lr}
+m_sin_ingreso <- glm(pagado ~ edumama_anios + rm, family = binomial, data = dd)
+
+lrtest(m_sin_ingreso, m_logit)
+```
+
+$LR = 582{,}8$ con 1 grado de libertad: el ingreso aporta mucho, incluso
+controlando por la escolaridad de la madre. La función
+`anova(m_sin_ingreso, m_logit, test = "Chisq")` da el mismo resultado.
+
+------------------------------------------------------------------------
+
+# Variable dependiente categórica: logit multinomial
+
+```{r tipo-colegio}
+prop.table(table(dd$TipoColegio_f))
+```
+
+Para modelarla completa se usa un **logit multinomial**. Se elige una
+categoría base (en este caso: municipal) y se estima un logit para cada
+una de las otras categorías contra la base. Con $J = 3$ categorías hay
+dos ecuaciones, cada una con sus propios $\beta$:
+
+$$\ln\frac{P(Y_i = j)}{P(Y_i = \text{municipal})} = X_i\beta_j,
+\qquad j = \text{subvencionado},\ \text{pagado}$$
+
+En R se estima con `multinom()` del paquete `nnet`, que toma como base
+el primer nivel del factor.
+
+```{r multinom}
+m_multi <- multinom(TipoColegio_f ~ edumama_anios + ingreso + rm,
+                    data = dd, trace = FALSE)
+
+summary(m_multi)
+```
+
+`multinom()` no entrega $z$ ni p-valores, pero se calculan igual que
+siempre:
+
+```{r multinom-z}
+(coef(m_multi) / summary(m_multi)$standard.errors) |> kable(digits = 2)
+```
+
+## Cómo se interpretan los coeficientes
+
+Cada fila es una ecuación **contra la categoría base**. Las seis
+pendientes son positivas y significativas: más escolaridad de la madre,
+más ingreso y vivir en la RM aumentan la probabilidad de estar en un
+colegio subvencionado *en relación con uno municipal*, y lo mismo para
+el pagado. Los coeficientes de la ecuación del pagado son unas cuatro
+veces los del subvencionado (ingreso: 0,523 contra 0,116).
+
+Igual que en el logit, $e^{\beta}$ tiene una lectura directa, que acá se
+llama *relative risk ratio*:
+
+```{r multinom-rrr}
+exp(coef(m_multi)) |> kable(digits = 3)
+```
+
+Un tramo más de ingreso multiplica por 1,08 la razón entre la
+probabilidad de estar en un colegio subvencionado y la de estar en uno
+municipal, y por 1,5 la razón pagado/municipal.
+
+## Probabilidades predichas
+
+```{r multinom-pred}
+predictions(m_multi,
+            newdata = datagrid(edumama_anios = 12, ingreso = c(1, 5, 10), rm = 1)) |>
+  select(group, ingreso, estimate) |>
+  kable(digits = 3)
+```
+
+Para un estudiante de la RM cuya madre tiene 12 años de escolaridad, la
+probabilidad de estar en un colegio municipal cae de 36% (tramo 1) a 23%
+(tramo 5) y a 7,7% (tramo 10); la del pagado sube de 1,7% a 9,5% y a
+48,5%. La del subvencionado primero sube de 62% a 67% y luego baja a
+48,5%.
+
+## Efectos marginales
+
+`avg_slopes()` también funciona con `multinom()` y entrega un efecto
+para cada categoría:
+
+```{r multinom-ape}
+ape_multi <- avg_slopes(m_multi, variables = "ingreso")
+ape_multi
+
+sum(ape_multi$estimate)
+```
+
+En promedio, un tramo más de ingreso baja en 2,9 puntos porcentuales la
+probabilidad de estar en un colegio municipal, baja en 1,4 puntos la del
+subvencionado y sube en 4,3 puntos la del pagado.
+
+> **OJO: En un logit multinomial el signo de un coeficiente no dice
+> hacia dónde se mueve la probabilidad de esa categoría.** Para eso hay
+> que calcular probabilidades predichas o los efectos marginales.
+>
+> Si las categorías tienen un **orden** (por ejemplo, tramos de ingreso
+> o una escala de acuerdo de 1 a 5), el modelo que se usa es el **logit
+> ordenado**, `MASS::polr()`, que usa ese orden y estima un solo $\beta$
+> por variable.
+
+------------------------------------------------------------------------
+
+# Variable dependiente censurada y truncada
+
+## Variable censurada
+
+Una variable está **censurada** cuando observamos todas las unidades de
+la muestra, pero para algunas de ellas no conocemos el valor exacto de
+la variable. En su lugar, conocemos que el valor está por debajo o por
+encima de cierto umbral.
+
+Ejemplo:
+
+- Indique el número de hijos:
+
+  - 1
+
+  - 2
+
+  - 3
+
+  - 4
+
+  - 5 o más
+
+En nuestra base de datos por ejemplo el **puntaje ranking** (`pj2`) como
+medida de rendimiento: no puede pasar de 850, y un 3,7% de la muestra
+está exactamente en 850. Todos esos estudiantes tienen el mismo puntaje
+observado, pero no necesariamente el mismo rendimiento "real".
+
+El modelo para una variable censurada es el **tobit**. Supone que existe
+una variable latente $Y^*$ que no está censurada:
+
+$$Y_i^* = X_i\beta + u_i, \quad u_i \sim N(0, \sigma^2), \qquad
+Y_i = \min(Y_i^*, c)$$
+
+y estima $\beta$ y $\sigma$ por máxima verosimilitud, usando la
+información de las observaciones censuradas (sabemos que su $Y^*$ es al
+menos $c$). En R se usa `tobit()` del paquete `AER`, indicando el piso
+(`left`) y el techo (`right`) de la censura.
+
+## Variable truncada
+
+Una variable está **truncada** cuando las unidades que están más allá
+del umbral **no están en la muestra**: no sabemos ni su valor ni que
+existen.
+
+Ejemplos:
+
+- Una encuesta de ingresos que sólo se aplica a quienes ganan menos de
+  cierto monto (por ejemplo, para postular a un beneficio).
+- Una base de estudiantes matriculados en la universidad: quienes no
+  alcanzaron el puntaje para entrar no aparecen en la base.
+
+La diferencia con la censura es cuánta información tenemos:
+
+|   | Censura | Truncamiento |
+|:-----------------------|:-----------------------|:-----------------------|
+| ¿Están las unidades fuera del umbral? | Sí | No |
+| ¿Conocemos sus $X$? | Sí | No |
+| ¿Conocemos su $Y$? | Sólo que está en el umbral | No |
+| Modelo | Tobit: `AER::tobit()` | Regresión truncada: `truncreg::truncreg()` |
+
+La **regresión truncada** supone la misma variable latente que el tobit,
+pero como sólo observamos a quienes están bajo el umbral, la
+verosimilitud usa la distribución de $Y^*$ **condicional** a que
+$Y^* < c$. En R se usa `truncreg()` del paquete `truncreg`, indicando el
+umbral (`point`) y hacia qué lado se cortó la muestra (`direction`).
+
+## Comparación con MCO
+
+Para ver qué pasa en cada caso, partimos del puntaje de Matemática
+completo, que no tiene tope en la práctica, y construimos
+artificialmente los dos problemas con un umbral en 650:
+
+- **Censura**: a todos los que sacaron 650 o más les asignamos 650, como
+  si la prueba tuviera ese tope.
+- **Truncamiento**: sacamos de la base a todos los que sacaron 650 o
+  más, como si sólo tuviéramos datos de quienes están bajo ese puntaje.
+
+```{r censura}
+# censura: todos siguen en la base, pero el puntaje se corta en 650
+dd <- dd |> mutate(pj4_c = pmin(pj4, 650))
+
+# truncamiento: sólo quedan los que sacaron menos de 650
+dd_trunc <- dd |> filter(pj4 < 650)
+
+c(proporcion_censurada = mean(dd$pj4 >= 650),
+  n_completo = nrow(dd), n_truncado = nrow(dd_trunc))
+```
+
+Un 22% de la muestra está en el umbral. En el caso censurado siguen las
+5.000 observaciones. En el truncado quedan 3.901.
+
+Estimamos el mismo modelo de cinco formas: MCO con los datos completos
+(que es la referencia, porque ahí no hay problema), y MCO y el modelo
+correspondiente en cada muestra modificada:
+
+```{r tobit-demo}
+# referencia: datos completos
+m_verdad <- lm(pj4 ~ edumama_anios + pj1, data = dd)
+
+# caso censurado
+m_cens   <- lm(pj4_c ~ edumama_anios + pj1, data = dd)
+m_tobit  <- tobit(pj4_c ~ edumama_anios + pj1, left = -Inf, right = 650, data = dd)
+
+# caso truncado
+m_trunc  <- lm(pj4 ~ edumama_anios + pj1, data = dd_trunc)
+m_treg   <- truncreg(pj4 ~ edumama_anios + pj1, data = dd_trunc,
+                     point = 650, direction = "right")
+
+data.frame(
+  MCO_comp = coef(m_verdad),
+  MCO_cens       = coef(m_cens),
+  tobit               = coef(m_tobit),
+  MCO_trunc        = coef(m_trunc),
+  trunc  = coef(m_treg)[1:3]
+) |> kable(digits = 3)
+
+```
+
+- **MCO subestima los efectos en los dos casos.** Los estudiantes con
+  más escolaridad de la madre y más NEM son los que más llegan al
+  umbral, así que la recta se aplana. Con la variable censurada, el
+  efecto de la escolaridad de la madre baja de 9,5 a 6,9, con la muestra
+  truncada a 5,4.
+- **El truncamiento es peor que la censura.** Con censura todavía
+  sabemos quiénes están en el umbral, con truncamiento se pierde también
+  esa información.
+- **El tobit recupera casi exactamente los valores de los datos
+  completos** (9,2 y 0,360), y también $\sigma$.
+- **La regresión truncada corrige buena parte del sesgo, pero no todo**
+  (8,6 y 0,276). Tiene menos información y depende más del supuesto de
+  normalidad del error, que acá no se cumple del todo: el puntaje tiene
+  un techo y una distribución asimétrica. Por eso además sus errores
+  estándar son mayores (0,62 para la escolaridad de la madre contra 0,41
+  del tobit).
+
+```{r truncreg-summary}
+summary(m_tobit)
+```
+
+La tabla `Observations` cuenta cuántas observaciones están censuradas en
+cada lado. `Log(scale)` es $\ln\hat\sigma$. `m_tobit$scale` devuelve
+$\hat\sigma$.
+
+```{r tobit-summary}
+summary(m_treg)
+```
+
+## Efectos marginales en el tobit
+
+Los $\beta$ del tobit son efectos sobre la **variable latente** $Y^*$:
+el puntaje que el estudiante habría sacado sin tope. Si lo que nos
+interesa es el efecto sobre el **puntaje observado** $Y$, hay que
+multiplicar los parámetros $\beta$ por la probabilidad de que la
+variable no esté censurada, en este caso, el efecto marginal es
+diferente para cada observación.
+
+$$\frac{\partial E(Y \mid X)}{\partial X_j} = \beta_j \cdot P(Y^* < c \mid X)
+= \beta_j \cdot \Phi\!\left(\frac{c - X\beta}{\sigma}\right)$$
+
+`marginaleffects` **no calcula** este efecto para el tobit, así que lo
+hacemos con la fórmula:
+
+```{r tobit-efectos}
+xb      <- predict(m_tobit, type = "lp")            # X*beta de cada estudiante
+p_nocen <- pnorm((650 - xb) / m_tobit$scale)        # P(no estar censurado)
+
+data.frame(
+  sobre_latente   = coef(m_tobit)[-1],
+  sobre_observado = mean(p_nocen) * coef(m_tobit)[-1]
+) |> kable(digits = 3)
+```
+
+El efecto sobre el puntaje observado se parece a lo que estimó MCO con
+la variable censurada, ya que MCO estima el efecto sobre $Y$ observada.
+El problema es que normalmente lo interpretamos como si fuera el efecto
+sobre $Y^*$. Cuál de los dos efectos calcular depende de la pregunta que
+queramos responder.
+
+### Qué hicimos paso a paso
+
+**1. Los** $\hat Y^*$ **estimados**: `predict(m_tobit, type = "lp")`
+entrega $\hat Y_i^* = X_i\hat\beta$: el puntaje que el modelo predice
+para cada estudiante si la prueba no tuviera tope. Por eso algunos
+quedan sobre 650.
+
+```{r tobit-yhat, fig.height=3.4}
+ggplot(data.frame(xb), aes(xb)) +
+  geom_histogram(bins = 50, fill = "#1E2761", alpha = 0.8) +
+  geom_vline(xintercept = 650, colour = "red", linewidth = 1) +
+  labs(x = expression(hat(Y)^"*" == X*hat(beta)), y = "Estudiantes",
+       title = "Puntajes latentes predichos por el tobit",
+       subtitle = "La línea roja es el umbral de censura (650)") +
+  theme_minimal()
+```
+
+Pero $\hat Y^*$ es sólo el valor esperado: el puntaje latente de cada
+estudiante es $Y_i^* \sim N(\hat Y_i^*, \hat\sigma^2)$, así que aunque
+su $\hat Y^*$ esté bajo 650, puede que su $Y^*$ real lo supere.
+
+**2. Estandarizar:** Para calcular la probabilidad de no estar censurado
+se mide la distancia de cada estudiante al umbral en desviaciones
+estándar:
+
+$$z_i = \frac{c - \hat Y_i^*}{\hat\sigma} = \frac{650 - X_i\hat\beta}{\hat\sigma}$$
+
+```{r tobit-z, fig.height=3.4}
+z_tobit <- (650 - xb) / m_tobit$scale
+
+ggplot(data.frame(z_tobit), aes(z_tobit)) +
+  geom_histogram(bins = 50, fill = "#1E2761", alpha = 0.8) +
+  geom_vline(xintercept = 0, colour = "red", linewidth = 1) +
+  labs(x = expression(z == (650 - hat(Y)^"*") / hat(sigma)), y = "Estudiantes",
+       title = "Distancia al umbral, en desviaciones estándar",
+       subtitle = "z > 0: el puntaje predicho está bajo 650; z < 0: está sobre 650") +
+  theme_minimal()
+```
+
+Es la misma distribución de antes, dada vuelta, desplazada y reescalada:
+el umbral queda en 0 y la unidad pasa a ser una desviación estándar del
+error.
+
+**3. Calcular la probabilidad acumulada:** `pnorm(z)` es la función de
+distribución acumulada de la normal estándar, $\Phi(z)$: el área a la
+izquierda de $z$. Convierte la distancia al umbral en una probabilidad.
+Al aplicarla a todos los estudiantes, cada uno queda sobre la curva:
+
+```{r tobit-pnorm-curva, fig.height=3.8}
+curva <- data.frame(z = seq(min(z_tobit) - 0.5, max(z_tobit) + 0.5, length.out = 400)) |>
+  mutate(p = pnorm(z))
+
+ggplot(curva, aes(z, p)) +
+  geom_line(linewidth = 1, colour = "grey50") +
+  geom_point(data = data.frame(z = z_tobit, p = p_nocen), colour = "#1E2761",
+             alpha = 0.15, size = 1.2) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(x = expression(z == (650 - hat(Y)^"*") / hat(sigma)),
+       y = "P(no censurado) = pnorm(z)",
+       title = "pnorm() transforma la distancia al umbral en una probabilidad",
+       subtitle = "Puntos azules: estudiantes; punto rojo: el estudiante mediano") +
+  theme_minimal()
+```
+
+- Un estudiante con $z = 0$ tiene un $\hat Y^*$ justo en 650: tiene 50%
+  de probabilidad de quedar bajo el tope.
+- Mientras más positivo es $z$, más lejos está bajo el umbral y la
+  probabilidad se acerca a 1: el tope casi no lo afecta y su efecto
+  marginal sobre $Y$ es casi igual a $\beta$.
+- Con $z$ negativo, el estudiante probablemente está censurado y su
+  efecto marginal sobre $Y$ se acerca a 0: aunque mejore su $X$, su
+  puntaje observado ya no puede subir.
+
+------------------------------------------------------------------------
+
+# Resumen de funciones en R
+
+| Qué quiero calcular | Función | Paquete |
+|:-----------------------|:-----------------------|:-----------------------|
+| Modelo de probabilidad lineal | `lm(y ~ x)` | `stats` |
+| Logit | `glm(y ~ x, family = binomial(link = "logit"))` | `stats` |
+| Probit | `glm(y ~ x, family = binomial(link = "probit"))` | `stats` |
+| $X\beta$ de cada observación | `predict(m)` | `stats` |
+| Probabilidad predicha de cada observación | `predict(m, type = "response")` | `stats` |
+| Densidad / prob. acumulada logística | `dlogis()` / `plogis()` | `stats` |
+| Densidad / prob. acumulada normal | `dnorm()` / `pnorm()` | `stats` |
+| *Odds ratios* | `exp(coef(m))` | `stats` |
+| Efectos marginales promedio (APE) | `avg_slopes(m)` | `marginaleffects` |
+| Probabilidades predichas para perfiles | `predictions(m, newdata = datagrid(...))` | `marginaleffects` |
+| Log-verosimilitud | `logLik(m)` | `stats` |
+| Test de razón de verosimilitud | `lrtest(m_r, m_c)` | `lmtest` |
+| Logit multinomial | `multinom(y ~ x)` | `nnet` |
+| Logit ordenado | `polr(y ~ x)` | `MASS` |
+| Tobit | `tobit(y ~ x, left = a, right = b)` | `AER` |
+| Regresión truncada | `truncreg(y ~ x, point = c, direction = "right")` | `truncreg` |
+
+------------------------------------------------------------------------
+
+# Ejercicios
+
+## Ejercicio 1
+
+Define la variable `alto_mate`, que vale 1 si el estudiante obtuvo 700
+puntos o más en Matemática (`pj4`), y considera el modelo
+
+$$P(\text{alto\_mate}_i = 1) = G(\beta_1 + \beta_2\,\text{pagado}_i +
+\beta_3\,\text{mujer}_i + \beta_4\,\text{edumama\_anios}_i +
+\beta_5\,\text{pj1}_i)$$
+
+Usa la base `dd`.
+
+a.  Estímalo como MPL, logit y probit. ¿Cuántas probabilidades predichas
+    por el MPL quedan fuera del intervalo $[0, 1]$?
+b.  Interpreta el signo de los coeficientes del logit y el *odds ratio*
+    de `mujer`.
+c.  Calcula el efecto marginal promedio (APE) de `pagado` y de `mujer`
+    con el logit y el probit. Compáralos con los coeficientes del MPL e
+    interprétalos en puntos porcentuales.
+
+
+
+## Ejercicio 2
+
+Usa el modelo logit de la clase,
+`pagado ~ edumama_anios + ingreso + rm`, estimado con la base `dd`.
+
+a.  Arma la tabla de predichos contra observados con umbral 0,5. Calcula
+    el porcentaje de aciertos, la **sensibilidad** (proporción de los
+    que están en colegio pagado que el modelo predice bien) y la
+    **especificidad** (lo mismo para los que no están en colegio
+    pagado).
+b.  Agrega al modelo `edupapa_anios` y `mujer`, y contrasta con un test
+    de razón de verosimilitud si las dos variables son conjuntamente
+    significativas. ¿Cuál es individualmente la menos importante?
+
+
+
+## Ejercicio 3
+
+El puntaje ranking (`pj2`) tiene un tope de 850. Usa la base `dd`.
+
+a.  ¿Qué proporción de estudiantes está en 850? Compárala entre hombres
+    y mujeres, y entre colegios pagados y no pagados.
+b.  Estima `pj2 ~ pj4 + mujer + edumama_anios + pagado` por MCO y con un
+    tobit con censura por la derecha en 850. Compara los coeficientes.
+c.  Calcula los efectos marginales del tobit sobre el puntaje ranking
+    observado. ¿Por qué en este caso MCO y tobit dan resultados tan
+    parecidos?
+d.  Interpreta el coeficiente de `pagado`. ¿Por qué podría ser negativo?
+
+
