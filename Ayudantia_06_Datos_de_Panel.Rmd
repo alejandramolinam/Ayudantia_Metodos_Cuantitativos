@@ -1,0 +1,460 @@
+---
+# ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+# Para modificarlo, editar el solucionario y volver a ejecutar
+# generar_version_estudiantes.R
+title: "Ayudantía 6: Datos de panel: efectos fijos y efectos aleatorios"
+subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+author: "Alejandra Molina"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2
+)
+
+options(digits = 6)
+
+# formato con coma decimal para las cifras dentro del texto
+num <- function(x, d = 2) format(round(x, d), nsmall = d, decimal.mark = ",", big.mark = ".")
+```
+
+> **Base de datos:** `pwt110.xlsx`, Penn World Table 11.0
+>
+> ------------------------------------------------------------------------
+
+```{r paquetes}
+# install.packages(c("plm", "readxl"))   # sólo la 1a vez
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(readxl)   # read_excel
+library(plm)      # plm, pdata.frame, fixef, phtest
+library(lmtest)   # coeftest
+```
+
+# Preparación de los datos
+
+Un **panel** sigue a las mismas unidades (personas, colegios, países) a
+lo largo del tiempo.
+
+Hoy vamos a usar la **Penn World Table,** que es un es un panel
+economico que contiene: el PIB, la población, el capital, el capital
+humano y otras variables de 185 países entre 1950 y 2023.
+
+Usamos estas variables:
+
+| Variable | Definición |
+|:---|:---|
+| `rgdpna` | PIB real a precios nacionales constantes de 2021 (millones de USD de 2021) |
+| `pop` | Población (millones) |
+| `hc` | Índice de capital humano, basado en los años de escolaridad y los retornos a la educación |
+| `rnna` | Stock de capital físico a precios nacionales constantes de 2021 (millones de USD de 2021) |
+| `csh_i` | Inversión como proporción del PIB |
+
+Vamos a filtrar el período 1990-2019 (antes de la pandemia) y los países
+que tienen datos completos en los 30 años, para construir un **panel
+balanceado**.
+
+Y vamos a calcular las variables:
+
+- logaritmo del PIB per cápita
+
+- logaritmo del capital per cápita
+
+```{r muestra}
+pwt <- read_excel("pwt110.xlsx", sheet = "Data") |>
+  filter(year >= 1990, year <= 2019) |>
+  transmute(pais      = country,
+            codigo    = countrycode,
+            year,
+            lpib_pc   = log(rgdpna / pop),   # log del PIB per cápita
+            hc,
+            lk_pc     = log(rnna / pop),     # log del capital per cápita
+            inversion = csh_i) |>
+  filter(!is.na(lpib_pc), !is.na(hc), !is.na(lk_pc), !is.na(inversion)) |>
+  group_by(codigo) |>
+  filter(n() == 30) |>                     # sólo países con los 30 años
+  ungroup()
+
+# plm necesita saber cuál es la unidad y cuál es el tiempo
+pd <- pdata.frame(pwt, index = c("codigo", "year"))
+
+pdim(pd)
+```
+
+# Pregunta de investigación
+
+**¿cómo se relaciona el PIB per cápita con el capital humano y con el
+capital físico per cápita?**
+
+Para eso proponemos el siguiente modelo:
+
+$$\log(\text{PIB})_{it} = \beta_1 + \beta_2\, hc_{it} + \beta_3 \log(K)_{it} + \text{dummies de año} + \text{error}_{it}$$
+
+------------------------------------------------------------------------
+
+# ¿Qué ocurre si usamos directamente MCO?
+
+MCO se puede calcular con la función `lm` o con `plm` usando el modelo
+*pooling*:
+
+```{r m-pool}
+m_pool <- plm(lpib_pc ~ hc + lk_pc + factor(year), data = pd, model = "pooling")
+m_lm <- lm(lpib_pc ~ hc + lk_pc + factor(year), data = pd)
+coef(m_pool)[c("hc", "lk_pc")]
+coef(m_lm)[c("hc", "lk_pc")]
+
+```
+
+## Dos fuentes de variación
+
+Vamos a graficar el PIB en función del capital per cápita de 12 países.
+Cada línea es la trayectoria de un país entre 1990 y 2019. La línea
+negra es la regresión simple de MCO con todos los países:
+
+```{r grafico-between-within, fig.height=5}
+m_simple <- lm(lpib_pc ~ lk_pc, data = pwt)
+
+nombres <- c(CHL = "Chile", ARG = "Argentina", BRA = "Brasil", MEX = "México",
+             KOR = "Corea", CHN = "China", IND = "India", USA = "EE.UU.",
+             DEU = "Alemania", JPN = "Japón", NGA = "Nigeria", KEN = "Kenia")
+
+algunos <- pwt |>
+  filter(codigo %in% names(nombres)) |>
+  mutate(nombre = nombres[codigo])
+
+ggplot(algunos, aes(lk_pc, lpib_pc, colour = nombre)) +
+  geom_abline(intercept = coef(m_simple)[1], slope = coef(m_simple)[2],
+              colour = "black", linewidth = 1) +
+  geom_path(linewidth = 1) +
+  geom_text(data = filter(algunos, year == 2019), aes(label = nombre),
+            hjust = -0.1, size = 3.2, show.legend = FALSE) +
+  scale_x_continuous(expand = expansion(mult = c(0.02, 0.12))) +
+  labs(x = "Log del capital per cápita", y = "Log del PIB per cápita",
+       title = "Entre países (between) vs dentro de cada país (within)",
+       subtitle = "Negro: regresión simple de MCO con todos los países; colores: trayectoria 1990-2019") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+Podemos observar dos tipos de variaciones en el gráfico:
+
+- **Variación *between*:** diferencias entre países. Los países están
+  ordenados a distintos niveles a lo largo de la recta negra. Los países
+  con más capital por persona son también más ricos.
+- **Variación *within*:** diferencias dentro de cada país entre
+  períodos. Cada país en el tiempo acumuló capital y aumentó su PIB per
+  cápita, pero cada uno a su propio nivel.
+
+MCO mezcla los dos tipos de variaciones. En particular la variación
+*between* está contaminada: los países con más capital (físico y humano)
+no se diferencian de los demás sólo en eso. También tienen mejores
+instituciones, otra historia y otra geografía, y todo eso también afecta
+el PIB, que es lo que queda en el término de error.
+
+## El efecto individual
+
+El modelo de panel separa el error en dos partes:
+
+$$Y_{it} = \beta_1 + \beta_2 X_{2it} + \beta_3 X_{3it} + a_i + u_{it}$$
+
+- $a_i$ es el **efecto individual**: todo lo propio de cada país que no
+  cambia en el tiempo, como sus instituciones, su geografía o su
+  historia.
+- $u_{it}$ es el error que cambia cada año y por cada país (una crisis,
+  un auge del precio de las materias primas).
+
+MCO deja $a_i$ dentro del error. Eso genera **dos problemas**.
+
+**Problema 1: el error está autocorrelacionado.** Como $a_i$ está en el
+error de todos los años de un país, sus residuos de un año al siguiente
+son casi iguales:
+
+```{r grafico-residuos, fig.height=4}
+residuos <- pwt |>
+  mutate(u = as.numeric(resid(m_pool))) |>
+  group_by(codigo) |>
+  mutate(u_anterior = lag(u)) |>
+  ungroup() |>
+  filter(!is.na(u_anterior))
+
+ggplot(residuos, aes(u_anterior, u)) +
+  geom_point(alpha = 0.15, colour = "#1E2761") +
+  geom_smooth(method = "lm", colour = "#C8553D", se = FALSE) +
+  labs(x = "Residuo de MCO en el año t − 1", y = "Residuo de MCO en el año t",
+       title = "Los residuos de un mismo país se parecen",
+       subtitle = paste("Correlación:", num(cor(residuos$u, residuos$u_anterior)))) +
+  theme_minimal()
+```
+
+**Problema 2: el estimador puede estar sesgado por problemas de
+variables omitidas.** Si $a_i$ está correlacionado con las $X$, MCO les
+atribuye a las variables independientes `hc` y a `lk_pc` parte del
+efecto de $a_i$ (de la variable omitida).
+
+En el siguiente gráfico se muestran los $a_i$ que estima el modelo de
+efectos fijos en función del capital per cápita promedio de cada país:
+
+```{r grafico-ai, fig.height=4.2}
+m_fe <- plm(lpib_pc ~ hc + lk_pc + factor(year), data = pd, model = "within")
+
+efectos <- data.frame(codigo = names(fixef(m_fe)), a_i = as.numeric(fixef(m_fe))) |>
+  inner_join(pwt |> group_by(codigo) |>
+               summarise(k_medio = mean(lk_pc), hc_medio = mean(hc)), by = "codigo")
+
+ggplot(efectos, aes(k_medio, a_i)) +
+  geom_point(alpha = 0.6, colour = "#1E2761") +
+  geom_smooth(method = "lm", colour = "#C8553D", se = FALSE) +
+  geom_text(data = filter(efectos, codigo %in% names(nombres)),
+            aes(label = nombres[codigo]), vjust = -0.8, size = 3) +
+  labs(x = "Log del capital per cápita promedio del país, 1990-2019",
+       y = expression("Efecto del país estimado " * hat(a)[i]),
+       title = "El efecto de cada país está correlacionado con X",
+       subtitle = paste("Correlación:", num(cor(efectos$k_medio, efectos$a_i)))) +
+  theme_minimal()
+```
+
+Los países con más capital tienen un $a_i$ más alto: lo inobservable
+está correlacionado con la $X$. Con el capital humano pasa lo mismo. Eso
+viola el supuesto $\operatorname{cov}(X, u) = 0$ de MCO, igual que una
+variable omitida, siendo la variable omitida todo lo que hace distinto a
+cada país.
+
+> **Por qué se necesita otra herramienta:** con datos de panel, el error
+> de MCO contiene $a_i$. Si $a_i$ no está correlacionado con las $X$, el
+> problema es sólo de autocorrelación y se resuelve con un modelo con
+> **efectos aleatorios**. Si está correlacionado, el estimador está
+> sesgado y hay que eliminar $a_i$ usando un modelo con **efectos
+> fijos**.
+
+------------------------------------------------------------------------
+
+# Efectos fijos (*within*)
+
+## Comparar a cada país consigo mismo
+
+Si a cada variable le restamos el promedio del país, $a_i$ desaparece,
+porque es igual en todos sus años:
+
+$$Y_{it} - \bar Y_i = \beta_2 (X_{2it} - \bar X_{2i}) + \beta_3 (X_{3it} - \bar X_{3i}) + (u_{it} - \bar u_i)$$
+
+Gráficamente:
+
+```{r grafico-desvios, fig.height=4.5}
+paneles <- rbind(
+  algunos |> transmute(nombre, x = lk_pc, y = lpib_pc, cual = "1. Datos originales"),
+  algunos |> group_by(nombre) |>
+    transmute(x = lk_pc - mean(lk_pc), y = lpib_pc - mean(lpib_pc),
+              cual = "2. Restando la media de cada país") |> ungroup()
+)
+
+# regresión simple within (todos los países), para la recta del panel derecho
+m_simple_fe <- plm(lpib_pc ~ lk_pc, data = pd, model = "within")
+
+rectas <- data.frame(
+  cual      = c("1. Datos originales", "2. Restando la media de cada país"),
+  intercept = c(coef(m_simple)[1], 0),
+  slope     = c(coef(m_simple)[2], coef(m_simple_fe)["lk_pc"])
+)
+
+ggplot(paneles, aes(x, y)) +
+  geom_path(aes(colour = nombre), linewidth = 0.9) +
+  geom_abline(data = rectas, aes(intercept = intercept, slope = slope),
+              colour = "black", linewidth = 1) +
+  facet_wrap(~ cual, scales = "free") +
+  labs(x = "Log del capital per cápita", y = "Log del PIB per cápita", colour = NULL,
+       title = "La transformación within",
+       subtitle = "Negro: regresión simple de MCO (izquierda) y de efectos fijos (derecha)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+Con la transformación todas las trayectorias están centradas en el
+origen y la pendiente sólo puede venir de cómo cambia cada país en el
+tiempo.
+
+## Estimación
+
+```{r within}
+
+m_fe <- plm(lpib_pc ~ hc + lk_pc + factor(year), data = pd, model = "within")
+
+summary(m_fe)
+```
+
+```{r comparar-pool-fe}
+rbind(MCO           = coef(m_pool)[c("hc", "lk_pc")],
+      efectos_fijos = coef(m_fe)[c("hc", "lk_pc")]) |> kable(digits = 3)
+```
+
+- **Capital físico:** Dentro de un mismo país, un capital per cápita 10%
+  más alto se asocia con un PIB per cápita 5% más alto. Parte de lo que
+  estimaba MCO era la diferencia entre países, pero la relación sigue
+  siendo significativa.
+- **Capital humano:** El parámetro dejó de ser significativo. Casi todo
+  lo que estimaba MCO era la diferencia entre países. Además, `hc`
+  cambia muy lento y de forma suave dentro de cada país (la escolaridad
+  de los adultos casi no se mueve de un año a otro), así que al restar
+  la media le queda muy poca variación propia.
+
+Las dummies de año (`factor(year)`) capturan lo que les pasa a todos los
+países a la vez en cada año (el crecimiento mundial, las crisis
+globales). Sin ellas, el efecto fijo atribuiría a las $X$ cualquier
+tendencia común, porque el capital y el PIB suben en casi todos los
+países al mismo tiempo.
+
+## Errores estándar agrupados
+
+Aunque efectos fijos elimina $a_i$, en datos anuales, los errores de un
+mismo país siguen correlacionados de un año a otro (un país que crece
+más que su promedio un año suele seguir así el siguiente). Lo
+recomendable es usar errores estándar agrupados por país:
+
+```{r fe-cluster}
+coeftest(m_fe, vcov = vcovHC(m_fe, cluster = "group"))[c("hc", "lk_pc"), ]
+```
+
+```{r ee-comparar}
+ee_normal <- summary(m_fe)$coefficients[c("hc", "lk_pc"), 2]
+ee_clus   <- sqrt(diag(vcovHC(m_fe, cluster = "group"))[c("hc", "lk_pc")])
+p_clus    <- coeftest(m_fe, vcov = vcovHC(m_fe, cluster = "group"))[c("hc", "lk_pc"), 4]
+
+rbind(ee_normal,ee_clus)
+
+```
+
+Los errores estándar crecen mucho. Con datos anuales de países, ignorar
+la autocorrelación subestima mucho la incertidumbre.
+
+Aun así, el **capital físico sigue siendo muy significativo** ($p$ \<
+0,001). El **capital humano no lo es**, ni con errores normales ni
+agrupados. Comparando a cada país consigo mismo, no hay evidencia de que
+más capital humano vaya junto con más PIB per cápita una vez que se
+controla por el capital físico: la relación que mostraba MCO venía de
+las diferencias entre países.
+
+## Lo que efectos fijos no puede estimar
+
+Cualquier variable que no cambie en el tiempo desaparece al restar la
+media, igual que $a_i$: la latitud, si el país tiene salida al mar, su
+pasado colonial. Efectos fijos **no puede estimar el efecto de
+características permanentes**; quedan absorbidas en $a_i$.
+
+------------------------------------------------------------------------
+
+# Efectos aleatorios
+
+Efectos aleatorios supone que $a_i$ **no** está correlacionado con las
+$X$. En ese caso MCO no está sesgado, pero es ineficiente, porque el
+error está autocorrelacionado. Efectos aleatorios corrige esa
+autocorrelación restando sólo una **fracción** $\theta$ de la media de
+cada país:
+
+$$Y_{it} - \theta \bar Y_i = \beta_1(1 - \theta) + \beta_2 (X_{2it} - \theta \bar X_{2i}) + \beta_3 (X_{3it} - \theta \bar X_{3i}) + \text{error}$$
+
+- Con $\theta = 0$ no se resta nada: es MCO.
+- Con $\theta = 1$ se resta toda la media: es efectos fijos.
+- Efectos aleatorios queda **entre medio**.
+
+```{r random}
+m_re <- plm(lpib_pc ~ hc + lk_pc + factor(year), data = pd, model = "random")
+
+summary(m_re)
+```
+
+## Cómo se elige $\theta$
+
+$\theta$ no lo elegimos nosotros: se estima a partir de cuánto pesa
+$a_i$ en el error y de cuántos períodos hay.
+
+$$\theta = 1 - \sqrt{\frac{\sigma^2_u}{\sigma^2_u + T\sigma^2_a}}$$
+
+Con muchos períodos, efectos aleatorios se acerca a efectos fijos.
+
+> La ventaja de usar efectos aleatorios es que puede estimar los
+> parámetros de variables que no cambian en el tiempo
+>
+> Como no elimina $a_i$, efectos aleatorios sí permite incluir variables
+> fijas en el tiempo, como la región del mundo o si el país tiene salida
+> al mar. Pero esas estimaciones sólo son confiables si se cumple el
+> supuesto de efectos aleatorios.
+
+------------------------------------------------------------------------
+
+# ¿Efectos fijos o efectos aleatorios?
+
+| Estimador | Qué hace con $a_i$ | Supuesto sobre $a_i$ | Estima variables fijas en el tiempo |
+|:---|:---|:---|:---|
+| MCO | Lo deja en el error | No correlacionado con $X$ | Sí |
+| Efectos fijos | Lo elimina restando la media | Ninguno | **No** |
+| Efectos aleatorios | Resta una fracción $\theta$ de la media | No correlacionado con $X$ | Sí |
+
+El **test de Hausman** compara efectos fijos con aleatorios. Si $a_i$ no
+está correlacionado con $X$, los dos son consistentes y deberían dar
+parecido, si lo está, sólo efectos fijos es consistente y difieren.
+
+$H_0$: $\operatorname{cov}(X_{it}, a_i) = 0$ (sirve efectos aleatorios)
+
+```{r hausman}
+phtest(m_fe, m_re)
+```
+
+Se rechaza la $H_0$: **hay que usar efectos fijos**. Es lo que
+anticipaba el gráfico de $\hat a_i$: el efecto de cada país sí está
+correlacionado con su capital. (Los grados de libertad son 31 porque el
+test compara también las 29 dummies de año.)
+
+> Con países como unidades, casi siempre corresponde usar efectos fijos:
+> no son una muestra al azar de una población y es difícil creer que sus
+> características permanentes no estén relacionadas con las $X$. Efectos
+> aleatorios se justifica más con unidades muestreadas al azar (personas
+> de una encuesta, por ejemplo).
+
+------------------------------------------------------------------------
+
+# Resumen de funciones en R
+
+| Qué quiero | Función | Paquete |
+|:---|:---|:---|
+| Estructurar el panel | `pdata.frame(d, index = c("id", "tiempo"))` | `plm` |
+| Dimensiones del panel | `pdim(pd)` | `plm` |
+| MCO con datos de panel | `plm(y ~ x, data = pd, model = "pooling")` | `plm` |
+| Efectos fijos | `plm(y ~ x, data = pd, model = "within")` | `plm` |
+| Efectos individuales estimados $\hat a_i$ | `fixef(m_fe)` | `plm` |
+| Errores estándar agrupados | `coeftest(m, vcov = vcovHC(m, cluster = "group"))` | `plm`, `lmtest` |
+| Efectos aleatorios | `plm(y ~ x, data = pd, model = "random")` | `plm` |
+| Varianzas y $\theta$ | `ercomp(m_re)` | `plm` |
+| Test de Hausman | `phtest(m_fe, m_re)` | `plm` |
+
+------------------------------------------------------------------------
+
+# Ejercicio
+
+Agrega al modelo de la clase la tasa de inversión (`inversion`, la
+inversión como proporción del PIB).
+
+a.  Estímalo por MCO, efectos fijos y efectos aleatorios. Compara el
+    coeficiente de `inversion` en los tres e interprétalo. Recuerda usar
+    errores estandar agrupados.
+b.  ¿Por qué el coeficiente cae tanto con efectos fijos? ¿Por qué crees
+    que deja de ser significativo, si el modelo ya incluye el capital?
+c.  Aplica el test de Hausman. ¿Qué modelo elegirías?

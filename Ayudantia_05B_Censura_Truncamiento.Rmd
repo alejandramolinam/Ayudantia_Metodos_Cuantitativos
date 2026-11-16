@@ -1,0 +1,357 @@
+---
+# ARCHIVO GENERADO AUTOMÁTICAMENTE — no editar directamente.
+# Para modificarlo, editar el solucionario y volver a ejecutar
+# generar_version_estudiantes.R
+title: "Ayudantía 5B: Variable dependiente censurada y truncada: tobit y regresión truncada"
+subtitle: "Métodos Cuantitativos · Doctorado en Políticas Públicas · Universidad del Desarrollo"
+author: "Alejandra Molina"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+    highlight: tango
+    code_folding: show
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  comment = "#>",
+  fig.align  = "center",
+  fig.width  = 7,
+  fig.height = 4.2
+)
+
+options(digits = 6)
+```
+
+> **Base de datos:** `demre2018.rds`
+>
+> ------------------------------------------------------------------------
+
+# Preparación de los datos
+
+En esta ayudantía la variable dependiente es continua, pero tiene un
+límite: o no conocemos su valor exacto más allá de un umbral, o las
+unidades más allá del umbral no están en la muestra. En los dos casos
+MCO está sesgado.
+
+| Variable dependiente | Ejemplo | Modelo |
+|:-----------------------|:-----------------------|:-----------------------|
+| **Censurada**: tiene un tope (piso y/o techo) | El puntaje ranking no puede pasar de 850 | Tobit |
+| **Truncada**: faltan las unidades fuera de un umbral | Una base con sólo quienes sacaron menos de 650 | Regresión truncada |
+
+```{r paquetes}
+# install.packages(c("AER", "truncreg"))   # sólo la 1a vez
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(AER)              # tobit
+library(truncreg)         # truncreg, regresión truncada
+```
+
+Usamos la misma muestra de las ayudantías anteriores y creamos tres
+variables dicotómicas.
+
+```{r muestra}
+d18 <- readRDS("demre2018.rds") |>
+  filter(!is.na(pj4), !is.na(pj3), !is.na(pj1), !is.na(pj2),
+         !is.na(edumama_anios), !is.na(edupapa_anios), !is.na(ingreso),!is.na(region))
+
+set.seed(210)
+dd <- slice_sample(d18, n = 5000, replace = FALSE) |>
+  mutate(pagado = as.integer(TipoColegio == 3),   # colegio particular pagado
+         mujer  = as.integer(sexo == 2),
+         rm     = as.integer(region == 13))       # Región Metropolitana
+
+c(muestra = nrow(dd))
+```
+
+------------------------------------------------------------------------
+
+# Variable dependiente censurada y truncada
+
+## Variable censurada
+
+Una variable está **censurada** cuando observamos todas las unidades de
+la muestra, pero para algunas de ellas no conocemos el valor exacto de
+la variable. En su lugar, conocemos que el valor está por debajo o por
+encima de cierto umbral.
+
+Ejemplo:
+
+- Indique el número de hijos:
+
+  - 1
+
+  - 2
+
+  - 3
+
+  - 4
+
+  - 5 o más
+
+En nuestra base de datos por ejemplo el **puntaje ranking** (`pj2`) como
+medida de rendimiento: no puede pasar de 850, y un 3,7% de la muestra
+está exactamente en 850. Todos esos estudiantes tienen el mismo puntaje
+observado, pero no necesariamente el mismo rendimiento "real".
+
+El modelo para una variable censurada es el **tobit**. Supone que existe
+una variable latente $Y^*$ que no está censurada:
+
+$$Y_i^* = X_i\beta + u_i, \quad u_i \sim N(0, \sigma^2), \qquad
+Y_i = \min(Y_i^*, c)$$
+
+y estima $\beta$ y $\sigma$ por máxima verosimilitud, usando la
+información de las observaciones censuradas (sabemos que su $Y^*$ es al
+menos $c$). En R se usa `tobit()` del paquete `AER`, indicando el piso
+(`left`) y el techo (`right`) de la censura.
+
+## Variable truncada
+
+Una variable está **truncada** cuando las unidades que están más allá
+del umbral **no están en la muestra**: no sabemos ni su valor ni que
+existen.
+
+Ejemplos:
+
+- Una encuesta de ingresos que sólo se aplica a quienes ganan menos de
+  cierto monto (por ejemplo, para postular a un beneficio).
+- Una base de estudiantes matriculados en la universidad: quienes no
+  alcanzaron el puntaje para entrar no aparecen en la base.
+
+La diferencia con la censura es cuánta información tenemos:
+
+|   | Censura | Truncamiento |
+|:-----------------------|:-----------------------|:-----------------------|
+| ¿Están las unidades fuera del umbral? | Sí | No |
+| ¿Conocemos sus $X$? | Sí | No |
+| ¿Conocemos su $Y$? | Sólo que está en el umbral | No |
+| Modelo | Tobit: `AER::tobit()` | Regresión truncada: `truncreg::truncreg()` |
+
+La **regresión truncada** supone la misma variable latente que el tobit,
+pero como sólo observamos a quienes están bajo el umbral, la
+verosimilitud usa la distribución de $Y^*$ **condicional** a que
+$Y^* < c$. En R se usa `truncreg()` del paquete `truncreg`, indicando el
+umbral (`point`) y hacia qué lado se cortó la muestra (`direction`).
+
+## Comparación con MCO
+
+Para ver qué pasa en cada caso, partimos del puntaje de Matemática
+completo, que no tiene tope en la práctica, y construimos
+artificialmente los dos problemas con un umbral en 650:
+
+- **Censura**: a todos los que sacaron 650 o más les asignamos 650, como
+  si la prueba tuviera ese tope.
+- **Truncamiento**: sacamos de la base a todos los que sacaron 650 o
+  más, como si sólo tuviéramos datos de quienes están bajo ese puntaje.
+
+```{r censura}
+# censura: todos siguen en la base, pero el puntaje se corta en 650
+dd <- dd |> mutate(pj4_c = pmin(pj4, 650))
+
+# truncamiento: sólo quedan los que sacaron menos de 650
+dd_trunc <- dd |> filter(pj4 < 650)
+
+c(proporcion_censurada = mean(dd$pj4 >= 650),
+  n_completo = nrow(dd), n_truncado = nrow(dd_trunc))
+```
+
+Un 22% de la muestra está en el umbral. En el caso censurado siguen las
+5.000 observaciones. En el truncado quedan 3.901.
+
+Estimamos el mismo modelo de cinco formas: MCO con los datos completos
+(que es la referencia), y MCO y el modelo correspondiente (tobit o
+trunc) en cada muestra modificada:
+
+```{r tobit-demo}
+# referencia: datos completos
+m_verdad <- lm(pj4 ~ edumama_anios + pj1, data = dd)
+
+# caso censurado
+m_cens   <- lm(pj4_c ~ edumama_anios + pj1, data = dd)
+m_tobit  <- tobit(pj4_c ~ edumama_anios + pj1, left = -Inf, right = 650, data = dd)
+
+# caso truncado
+m_trunc  <- lm(pj4 ~ edumama_anios + pj1, data = dd_trunc)
+m_treg   <- truncreg(pj4 ~ edumama_anios + pj1, data = dd_trunc,
+                     point = 650, direction = "right")
+
+data.frame(
+  MCO_comp = coef(m_verdad),
+  MCO_cens       = coef(m_cens),
+  tobit               = coef(m_tobit),
+  MCO_trunc        = coef(m_trunc),
+  trunc  = coef(m_treg)[1:3]
+) |> kable(digits = 3)
+
+```
+
+- **MCO subestima los efectos en los dos casos.** Los estudiantes con
+  más escolaridad de la madre y más NEM son los que más llegan al
+  umbral, así que la recta se aplana en ese extremo. Con la variable
+  censurada, el efecto de la escolaridad de la madre baja de 9,5 a 6,9,
+  con la muestra truncada a 5,4.
+- **El truncamiento es peor que la censura.** Con censura todavía
+  sabemos quiénes están en el umbral, con truncamiento se pierde también
+  esa información.
+- **El tobit recupera casi exactamente los valores de los datos
+  completos** (9,2 y 0,360), y también $\sigma$.
+- **La regresión truncada corrige buena parte del sesgo, pero no todo**
+  (8,6 y 0,276). Tiene menos información y depende más del supuesto de
+  normalidad del error, que acá no se cumple del todo: el puntaje tiene
+  un techo y una distribución asimétrica. Por eso además sus errores
+  estándar son mayores (0,62 para la escolaridad de la madre contra 0,41
+  del tobit).
+
+```{r truncreg-summary}
+summary(m_tobit)
+```
+
+La tabla `Observations` cuenta cuántas observaciones están censuradas en
+cada lado. `Log(scale)` es $\ln\hat\sigma$. `m_tobit$scale` devuelve
+$\hat\sigma$.
+
+```{r tobit-summary}
+summary(m_treg)
+```
+
+## Efectos marginales en el tobit
+
+Los $\beta$ del tobit son efectos sobre la **variable latente** $Y^*$:
+el puntaje que el estudiante habría sacado sin tope. Si lo que nos
+interesa es el efecto sobre el **puntaje observado** $Y$, hay que
+multiplicar los parámetros $\beta$ por la probabilidad de que la
+variable no esté censurada, en este caso, el efecto marginal es
+diferente para cada observación.
+
+$$\frac{\partial E(Y \mid X)}{\partial X_j} = \beta_j \cdot P(Y^* < c \mid X)
+= \beta_j \cdot \Phi\!\left(\frac{c - X\beta}{\sigma}\right)$$
+
+`marginaleffects` **no calcula** este efecto para el tobit, así que lo
+hacemos con la fórmula:
+
+```{r tobit-efectos}
+xb      <- predict(m_tobit, type = "lp")            # X*beta de cada estudiante
+p_nocen <- pnorm((650 - xb) / m_tobit$scale)        # P(no estar censurado)
+
+data.frame(
+  sobre_latente   = coef(m_tobit)[-1],
+  sobre_observado = mean(p_nocen) * coef(m_tobit)[-1]
+) |> kable(digits = 3)
+```
+
+El efecto sobre el puntaje observado se parece a lo que estimó MCO con
+la variable censurada, ya que MCO estima el efecto sobre $Y$ observada.
+El problema es que normalmente lo interpretamos como si fuera el efecto
+sobre $Y^*$. Cuál de los dos efectos calcular depende de la pregunta que
+queramos responder.
+
+### Qué hicimos paso a paso
+
+**1. Los** $\hat Y^*$ **estimados**: `predict(m_tobit, type = "lp")`
+entrega $\hat Y_i^* = X_i\hat\beta$: el puntaje que el modelo predice
+para cada estudiante si la prueba no tuviera tope. Por eso algunos
+quedan sobre 650.
+
+```{r tobit-yhat, fig.height=3.4}
+ggplot(data.frame(xb), aes(xb)) +
+  geom_histogram(bins = 50, fill = "#1E2761", alpha = 0.8) +
+  geom_vline(xintercept = 650, colour = "red", linewidth = 1) +
+  labs(x = expression(hat(Y)^"*" == X*hat(beta)), y = "Estudiantes",
+       title = "Puntajes latentes predichos por el tobit",
+       subtitle = "La línea roja es el umbral de censura (650)") +
+  theme_minimal()
+```
+
+Pero $\hat Y^*$ es sólo el valor esperado: el puntaje latente de cada
+estudiante es $Y_i^* \sim N(\hat Y_i^*, \hat\sigma^2)$, así que aunque
+su $\hat Y^*$ esté bajo 650, puede que su $Y^*$ real lo supere.
+
+**2. Estandarizar:** Para calcular la probabilidad de no estar censurado
+se mide la distancia de cada estudiante al umbral en desviaciones
+estándar:
+
+$$z_i = \frac{c - \hat Y_i^*}{\hat\sigma} = \frac{650 - X_i\hat\beta}{\hat\sigma}$$
+
+```{r tobit-z, fig.height=3.4}
+z_tobit <- (650 - xb) / m_tobit$scale
+
+ggplot(data.frame(z_tobit), aes(z_tobit)) +
+  geom_histogram(bins = 50, fill = "#1E2761", alpha = 0.8) +
+  geom_vline(xintercept = 0, colour = "red", linewidth = 1) +
+  labs(x = expression(z == (650 - hat(Y)^"*") / hat(sigma)), y = "Estudiantes",
+       title = "Distancia al umbral, en desviaciones estándar",
+       subtitle = "z > 0: el puntaje predicho está bajo 650; z < 0: está sobre 650") +
+  theme_minimal()
+```
+
+Es la misma distribución de antes, dada vuelta, desplazada y reescalada:
+el umbral queda en 0 y la unidad pasa a ser una desviación estándar del
+error.
+
+**3. Calcular la probabilidad acumulada:** `pnorm(z)` es la función de
+distribución acumulada de la normal estándar, $\Phi(z)$: el área a la
+izquierda de $z$. Convierte la distancia al umbral en una probabilidad.
+Al aplicarla a todos los estudiantes, cada uno queda sobre la curva:
+
+```{r tobit-pnorm-curva, fig.height=3.8}
+curva <- data.frame(z = seq(min(z_tobit) - 0.5, max(z_tobit) + 0.5, length.out = 400)) |>
+  mutate(p = pnorm(z))
+
+ggplot(curva, aes(z, p)) +
+  geom_line(linewidth = 1, colour = "grey50") +
+  geom_point(data = data.frame(z = z_tobit, p = p_nocen), colour = "#1E2761",
+             alpha = 0.15, size = 1.2) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(x = expression(z == (650 - hat(Y)^"*") / hat(sigma)),
+       y = "P(no censurado) = pnorm(z)",
+       title = "pnorm() transforma la distancia al umbral en una probabilidad",
+       subtitle = "Puntos azules: estudiantes; punto rojo: el estudiante mediano") +
+  theme_minimal()
+```
+
+- Un estudiante con $z = 0$ tiene un $\hat Y^*$ justo en 650: tiene 50%
+  de probabilidad de quedar bajo el tope.
+- Mientras más positivo es $z$, más lejos está bajo el umbral y la
+  probabilidad se acerca a 1: el tope casi no lo afecta y su efecto
+  marginal sobre $Y$ es casi igual a $\beta$.
+- Con $z$ negativo, el estudiante probablemente está censurado y su
+  efecto marginal sobre $Y$ se acerca a 0: aunque mejore su $X$, su
+  puntaje observado ya no puede subir.
+
+------------------------------------------------------------------------
+
+# Resumen de funciones en R
+
+| Qué quiero calcular | Función | Paquete |
+|:-----------------------|:-----------------------|:-----------------------|
+| $X\beta$ de cada observación | `predict(m)` | `stats` |
+| Densidad / prob. acumulada normal | `dnorm()` / `pnorm()` | `stats` |
+| Tobit | `tobit(y ~ x, left = a, right = b)` | `AER` |
+| Regresión truncada | `truncreg(y ~ x, point = c, direction = "right")` | `truncreg` |
+
+------------------------------------------------------------------------
+
+# Ejercicio
+
+El puntaje ranking (`pj2`) tiene un tope de 850. Usa la base `dd`.
+
+a.  ¿Qué proporción de estudiantes está en 850? Compárala entre hombres
+    y mujeres, y entre colegios pagados y no pagados.
+b.  Estima `pj2 ~ pj4 + mujer + edumama_anios + pagado` por MCO y con un
+    tobit con censura por la derecha en 850. Compara los coeficientes.
+c.  Calcula los efectos marginales del tobit sobre el puntaje ranking
+    observado. ¿Por qué en este caso MCO y tobit dan resultados tan
+    parecidos?
+d.  Interpreta el coeficiente de `pagado`. ¿Por qué podría ser negativo?
